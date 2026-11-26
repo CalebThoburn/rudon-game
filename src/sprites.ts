@@ -138,12 +138,13 @@ export class RackSprite {
     [this.c, this.g] = canvas(96, 176);
     this.tex = texture(this.c);
   }
-  draw(on: boolean, roomTemp: number, t: number): void {
+  draw(on: boolean, roomTemp: number, t: number, blades: number): void {
     const g = this.g;
     g.clearRect(0, 0, 96, 176);
     rrect(g, 10, 6, 76, 164, 6); inked(g, '#2d2f33');
-    for (let k = 0; k < 9; k++) {
-      const y = 16 + k * 17;
+    for (let k = 0; k < 8; k++) {
+      const y = 16 + k * 19;
+      if (k >= blades) { g.fillStyle = '#111215'; g.fillRect(18, y, 60, 12); continue; }
       rrect(g, 18, y, 60, 12, 2); inked(g, '#3c3f45', 2);
       if (on) {
         const hot = roomTemp > 30;

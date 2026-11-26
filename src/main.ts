@@ -4,9 +4,11 @@
 // workers (see simClient.ts / sim/src/lib.rs).
 import * as THREE from 'three';
 import { SimClient } from './simClient';
-import { Cmd, H, R, ROOMS, outletTemp, room } from './simLayout';
+import { R, H, ROOMS, outletTemp, room } from './simLayout';
 import * as S from './sprites';
-import { InspectPanel } from './inspect';
+import { InspectPanel, type MachineDef } from './inspect';
+import { Inventory, one } from './items';
+import { chillerDef, engineDef, pumpDef, rackDef } from './machines';
 import { Hud } from './hud';
 import { chime } from './audio';
 
@@ -34,7 +36,14 @@ addEventListener('resize', () => {
 });
 
 const sim = new SimClient(new URL('sim.wasm', document.baseURI).href);
-const inspect = new InspectPanel(document.getElementById('inspect') as HTMLCanvasElement, (k, r, v) => sim.command(k, r, v));
+const inventory = new Inventory(document.getElementById('inventory')!);
+inventory.add(one('wrench')); // a plumber never goes anywhere without one
+const inspect = new InspectPanel(
+  document.getElementById('inspect') as HTMLCanvasElement,
+  document.getElementById('ghost') as HTMLCanvasElement,
+  inventory,
+  (k, r, v) => sim.command(k, r, v),
+);
 const hud = new Hud(document.getElementById('hud')!, sim);
 const hint = document.getElementById('hint')!;
 
@@ -197,18 +206,13 @@ function nearestMachine(): Machine | null {
   return best;
 }
 
+const DEFS: Record<Kind, MachineDef> = { engine: engineDef, rack: rackDef, pump: pumpDef, chiller: chillerDef };
+
 function interact(): void {
   if (inspect.isOpen) return inspect.close();
   const m = nearestMachine();
-  const st = sim.state;
-  if (!m || !st) return;
-  const flags = st[H.flags];
-  switch (m.kind) {
-    case 'engine': inspect.open(m.room); break;
-    case 'rack': sim.command(Cmd.Rack, m.room, room(st, m.room, R.rackOn) > 0.5 ? 0 : 1); break;
-    case 'pump': sim.command(Cmd.Pump, 0, flags & 1 ? 0 : 1); break;
-    case 'chiller': sim.command(Cmd.Chiller, 0, flags & 2 ? 0 : 1); break;
-  }
+  if (!m || !sim.state) return;
+  inspect.open(`${m.kind}:${m.room}`, DEFS[m.kind], Math.max(0, m.room));
 }
 
 addEventListener('keydown', (e) => {
@@ -310,17 +314,20 @@ function update(dt: number): void {
         v.bell = 1;
         const eng = machines.find((m) => m.kind === 'engine' && m.room === i)!;
         const d = player.position.distanceTo(eng.obj.position);
-        if (inspect.room === i) chime(0.3);
+        if (inspect.isShowing(`engine:${i}`)) chime(0.3);
         else if (d < 9) chime(0.25 * (1 - d / 9));
       }
       v.chimes = chimes;
-      engineSprites[i].draw(v.ledger, v.ref, room(st, i, R.valve), room(st, i, R.pbFill), v.bell);
-      if (drawRacks) rackSprites[i].draw(room(st, i, R.rackOn) > 0.5, temp, elapsed);
+      const fill = room(st, i, R.jarPresent) > 0.5 ? room(st, i, R.pbFill) : 0;
+      engineSprites[i].draw(v.ledger, v.ref, room(st, i, R.valve), fill, v.bell);
+      if (drawRacks) rackSprites[i].draw(room(st, i, R.rackOn) > 0.5, temp, elapsed, room(st, i, R.blades));
     }
     S.tempColor(fSum > 1e-7 ? tf / fSum : st[H.coolantTemp], returnMat.color);
     inspect.draw(st, dt, sim.timeScale);
   }
   hud.update(dt);
+  // The debug panel must never cover a machine you're working on.
+  document.getElementById('hud')!.classList.toggle('dim', inspect.isOpen);
 }
 
 function frame(): void {
