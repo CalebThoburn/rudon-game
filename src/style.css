@@ -1,0 +1,26 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #17140f; font-family: ui-monospace, Menlo, monospace; }
+#app { position: fixed; inset: 0; }
+#app canvas { display: block; }
+.hidden { display: none !important; }
+#hint {
+  position: fixed; transform: translate(-50%, -100%); pointer-events: none;
+  padding: 2px 8px; border: 2px solid #2a2118; border-radius: 4px;
+  background: #e9dcbc; color: #2a2118; font-weight: bold; font-size: 14px;
+}
+#inspect {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  cursor: none; box-shadow: 0 20px 80px #000c; border-radius: 6px;
+}
+#hud {
+  position: fixed; left: 10px; top: 10px; min-width: 300px; padding: 10px 12px;
+  background: #0d0b08d9; color: #c9bd9f; font-size: 12px; line-height: 1.5;
+  border: 1px solid #3b3326; border-radius: 4px; white-space: pre;
+}
+#hud h3 { margin: 0 0 4px; font-size: 12px; color: #e9c46a; letter-spacing: 1px; }
+#hud button {
+  font: inherit; font-size: 11px; margin: 2px 2px 0 0; padding: 1px 6px; cursor: pointer;
+  background: #2a2418; color: #c9bd9f; border: 1px solid #4a4030; border-radius: 3px;
+}
+#hud button.on { background: #e9c46a; color: #1a160f; }
+#hud .warn { color: #e76f51; }
+#help { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); color: #8a7f68; font-size: 12px; pointer-events: none; }

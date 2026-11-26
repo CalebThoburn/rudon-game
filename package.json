@@ -1,0 +1,22 @@
+{
+  "name": "rudon-game",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:sim": "cargo build --manifest-path sim/Cargo.toml --release --target wasm32-unknown-unknown && cp sim/target/wasm32-unknown-unknown/release/rudon_sim.wasm public/sim.wasm",
+    "dev": "npm run build:sim && vite",
+    "build": "npm run build:sim && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test:sim": "cargo test --manifest-path sim/Cargo.toml --release",
+    "bench:sim": "cargo run --manifest-path sim/Cargo.toml --release --example bench"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

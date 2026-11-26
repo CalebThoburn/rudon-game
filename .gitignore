@@ -1,0 +1,5 @@
+node_modules/
+dist/
+sim/target/
+public/sim.wasm
+.DS_Store
