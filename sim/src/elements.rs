@@ -224,6 +224,12 @@ pub struct Elements {
     pres: Vec<f32>,
     cap: Vec<f32>,
     kcond: Vec<f32>,
+    /// Pressure last substep, and how many substeps since a sudden jump (a blast wave).
+    pres_prev: Vec<f32>,
+    shock: Vec<u8>,
+    /// Connected open spaces: which one each cell is in, and its average pressure.
+    region: Vec<u32>,
+    region_p: Vec<f32>,
     fluid: Vec<f32>,
     /// Flow through each cell's east and south faces (fraction of upstream per substep),
     /// separately for gas and liquid. It has momentum: pressure accelerates it, friction slows it.
@@ -267,6 +273,10 @@ impl Elements {
             pres: vec![P0; N],
             cap: vec![1.0; N],
             kcond: vec![0.026; N],
+            pres_prev: vec![P0; N],
+            shock: vec![0; N],
+            region: vec![u32::MAX; N],
+            region_p: Vec::new(),
             fluid: vec![1.0; N],
             flow_g: vec![[0.0; 2]; N],
             flow_l: vec![[0.0; 2]; N],
@@ -410,6 +420,14 @@ impl Elements {
             let open = is_open(self.mat[i]);
             self.pres[i] = if open { fluid_pressure(&self.m[i], self.temp[i]) } else { 0.0 };
             self.fluid[i] = if open { fluidity(&self.m[i], self.temp[i]) } else { 1.0 };
+            // A sudden jump in one substep is a blast wave: for a moment, that local
+            // pressure is real. Anything slower would even out at the speed of sound.
+            if open && self.pres[i] > self.pres_prev[i] * 1.3 + 5000.0 {
+                self.shock[i] = 6;
+            } else {
+                self.shock[i] = self.shock[i].saturating_sub(1);
+            }
+            self.pres_prev[i] = self.pres[i];
         }
         self.flow(dt);
         for i in 0..N {
@@ -821,8 +839,51 @@ impl Elements {
         }
     }
 
+    /// Find each connected open space and its average pressure.
+    ///
+    /// Real gas evens out pressure at the speed of sound (effectively at once at
+    /// this scale), so a wall feels the pressure of the whole space it encloses,
+    /// not of the one cell beside it. The flow model can't move gas that fast,
+    /// so the average stands in for it.
+    fn find_regions(&mut self) {
+        self.region.iter_mut().for_each(|r| *r = u32::MAX);
+        self.region_p.clear();
+        let mut stack = Vec::new();
+        for start in 0..N {
+            if self.region[start] != u32::MAX || !is_open(self.mat[start]) {
+                continue;
+            }
+            let id = self.region_p.len() as u32;
+            let (mut sum, mut n) = (0.0f64, 0.0f64);
+            self.region[start] = id;
+            stack.push(start);
+            while let Some(i) = stack.pop() {
+                sum += self.pres[i] as f64;
+                n += 1.0;
+                for d in 0..4 {
+                    if let Some(j) = Self::nb(i, d) {
+                        if self.region[j] == u32::MAX && is_open(self.mat[j]) {
+                            self.region[j] = id;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            self.region_p.push((sum / n) as f32);
+        }
+    }
+
+    /// The pressure a wall feels from an open cell: its space's average, or the
+    /// local pressure while a blast wave is passing (whichever is greater).
+    #[inline]
+    fn felt_pressure(&self, i: usize) -> f32 {
+        let avg = self.region_p[self.region[i] as usize];
+        if self.shock[i] > 0 { avg.max(self.pres[i]) } else { avg }
+    }
+
     /// Solids break when the pressure difference across them exceeds their strength.
     fn structure(&mut self, dt: f32) {
+        self.find_regions();
         for i in 0..N {
             let mat = self.mat[i];
             let mt = &MATS[mat as usize];
@@ -837,14 +898,14 @@ impl Elements {
                 }
                 let opp = (d + 2) % 4;
                 let (p2, support) = match Self::nb(i, opp) {
-                    Some(o) if is_open(self.mat[o]) => (self.pres[o], 1.0),
+                    Some(o) if is_open(self.mat[o]) => (self.felt_pressure(o), 1.0),
                     Some(o) => match Self::nb(o, opp) {
-                        Some(o2) if is_open(self.mat[o2]) => (self.pres[o2], 2.0),
+                        Some(o2) if is_open(self.mat[o2]) => (self.felt_pressure(o2), 2.0),
                         _ => (P0, 3.0),
                     },
                     None => (P0, 3.0),
                 };
-                stress = stress.max((self.pres[a] - p2).abs() / support);
+                stress = stress.max((self.felt_pressure(a) - p2).abs() / support);
             }
             if stress > mt.strength {
                 self.hp[i] -= (stress / mt.strength - 1.0) * dt * 4.0;
@@ -1566,6 +1627,42 @@ mod tests {
         let ch4 = region_sum(&e, 141, 73, 185, 121, CH4);
         eprintln!("rot box after 15 min: O2 {:.2} g, methane {:.3} g", o2 * 1e3, ch4 * 1e3);
         assert!(ch4 > 0.0);
+    }
+
+    /// Heat a sealed glass box with the heat tool's pattern; returns broken wall cells.
+    fn heat_box(size: usize, brush: usize, spot: &str) -> usize {
+        let mut e = fresh();
+        let (x0, x1) = (20, 20 + size + 1);
+        e.boxed(x0, x0, x1, x1, GLASS);
+        let r = brush / 2;
+        let (cx, cy) = match spot {
+            "centre" => ((x0 + x1) / 2, (x0 + x1) / 2),
+            "corner inside" => (x0 + 1 + r, x0 + 1 + r),
+            _ => (x0, x0), // brush centred on the corner of the wall itself
+        };
+        for _ in 0..1000 {
+            for dy in 0..brush { for dx in 0..brush { e.edit(cx + dx - r, cy + dy - r, 3, 25.0); } }
+            e.step(0.06);
+        }
+        let mut broken = 0;
+        for y in x0..=x1 { for x in x0..=x1 {
+            if (x == x0 || x == x1 || y == x0 || y == x1) && e.mat[Elements::idx(x, y)] != GLASS { broken += 1; }
+        } }
+        broken
+    }
+
+    #[test]
+    fn where_you_heat_a_box_doesnt_matter_only_how_much() {
+        // A big box barely warms on average: wherever you heat it, it holds.
+        for spot in ["centre", "corner inside", "on the wall"] {
+            let b = heat_box(19, 5, spot);
+            eprintln!("19×19 box, heated {spot}: {b} glass cells broken");
+            assert_eq!(b, 0, "heating {spot} must not burst a box whose average pressure stays low");
+        }
+        // A small box heats up as a whole and bursts, whether heated in the middle or the corner.
+        let (c, k) = (heat_box(5, 5, "centre"), heat_box(5, 5, "corner inside"));
+        eprintln!("5×5 box: centre {c} broken, corner {k} broken");
+        assert!(c > 0 && k > 0);
     }
 
     #[test]
