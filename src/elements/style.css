@@ -1,0 +1,23 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #17140f; font-family: ui-monospace, Menlo, monospace; }
+#app { position: fixed; inset: 0; }
+#app canvas { display: block; }
+.hidden { display: none !important; }
+#hud {
+  position: fixed; left: 10px; top: 10px; min-width: 320px; padding: 10px 12px; pointer-events: none;
+  background: #0d0b08d9; color: #c9bd9f; font-size: 12px; line-height: 1.45; white-space: pre;
+  border: 1px solid #3b3326; border-radius: 4px;
+}
+#toolbar, #palette {
+  position: fixed; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 3px; padding: 5px; background: #0d0b08e6; border: 1px solid #3b3326; border-radius: 6px; max-width: 96vw;
+}
+#toolbar { bottom: 24px; }
+#palette { bottom: 70px; }
+button {
+  font: inherit; font-size: 11px; padding: 3px 7px; cursor: pointer;
+  background: #2a2418; color: #c9bd9f; border: 1px solid #4a4030; border-radius: 3px;
+}
+button.on { background: #e9c46a; color: #1a160f; }
+.sep { width: 10px; }
+#help { position: fixed; bottom: 4px; left: 50%; transform: translateX(-50%); color: #8a7f68; font-size: 11px; white-space: nowrap; }
+#help a { color: #e9c46a; }

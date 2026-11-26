@@ -39,7 +39,7 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
 });
 
-const sim = new SimClient(new URL('sim.wasm', document.baseURI).href);
+const sim = new SimClient(new URL(`sim.wasm?v=${__BUILD__}`, document.baseURI).href);
 const send = (k: number, i: number, v: number) => sim.command(k, i, v);
 const hint = document.getElementById('hint')!;
 const inventory = new Inventory(document.getElementById('inventory')!);

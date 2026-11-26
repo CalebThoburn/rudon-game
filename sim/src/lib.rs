@@ -20,6 +20,8 @@
 //! fitted is sealed by Rudon's self-closing couplings.
 //! See the vault notes `Simulation` and `Reconciliation Engine`.
 
+pub mod elements;
+
 use std::f64::consts::TAU;
 
 pub const ROOMS: usize = 3;
@@ -1048,4 +1050,97 @@ mod tests {
             world_free(w);
         }
     }
+}
+
+// ---------- Prototype 02: element world exports ----------
+use elements::Elements;
+
+/// `which`: 0 = the demo room, 1 = empty room.
+#[no_mangle]
+pub extern "C" fn elem_new(which: u32) -> *mut Elements {
+    let e = if which == 0 { elements::demo() } else {
+        let mut e = Elements::new();
+        e.boxed(0, 0, elements::W - 1, elements::H - 1, elements::CONCRETE);
+        e
+    };
+    Box::into_raw(Box::new(e))
+}
+
+/// # Safety
+/// `e` must come from `elem_new` and not be used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn elem_free(e: *mut Elements) {
+    if !e.is_null() {
+        drop(Box::from_raw(e));
+    }
+}
+
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_step(e: *mut Elements, dt: f32) {
+    let e = &mut *e;
+    e.step(dt);
+}
+
+/// RGBA pixels, W×H×4 bytes.
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_render(e: *mut Elements, mode: u32) -> *const u8 {
+    let e = &mut *e;
+    e.render(mode).as_ptr()
+}
+
+/// [x, y, kind] per animal; see `elem_agent_count`.
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_agents(e: *mut Elements) -> *const f32 {
+    let e = &mut *e;
+    e.agent_data().as_ptr()
+}
+
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_agent_count(e: *mut Elements) -> u32 {
+    let e = &*e;
+    e.agents.len() as u32
+}
+
+/// 24 floats describing one cell.
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_probe(e: *mut Elements, x: u32, y: u32) -> *const f32 {
+    let e = &mut *e;
+    let i = (y as usize).min(elements::H - 1) * elements::W + (x as usize).min(elements::W - 1);
+    e.probe(i).as_ptr()
+}
+
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_edit(e: *mut Elements, x: u32, y: u32, tool: u32, value: f32) {
+    let e = &mut *e;
+    e.edit(x as usize, y as usize, tool, value);
+}
+
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_time(e: *mut Elements) -> f32 {
+    let e = &*e;
+    e.time
+}
+
+#[no_mangle]
+pub extern "C" fn elem_width() -> u32 {
+    elements::W as u32
+}
+
+#[no_mangle]
+pub extern "C" fn elem_height() -> u32 {
+    elements::H as u32
 }
