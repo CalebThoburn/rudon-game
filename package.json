@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build:sim": "cargo build --manifest-path sim/Cargo.toml --release --target wasm32-unknown-unknown && cp sim/target/wasm32-unknown-unknown/release/rudon_sim.wasm public/sim.wasm",
+    "build:sim": "cargo build --manifest-path sim/Cargo.toml --release --target wasm32-unknown-unknown && mkdir -p public && cp sim/target/wasm32-unknown-unknown/release/rudon_sim.wasm public/sim.wasm",
     "dev": "npm run build:sim && vite",
     "build": "npm run build:sim && tsc --noEmit && vite build",
     "preview": "vite preview",
