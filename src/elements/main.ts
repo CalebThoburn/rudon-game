@@ -10,14 +10,23 @@ export const MATERIALS = [
   'open', 'steel', 'copper', 'zinc', 'carbon', 'glass', 'concrete', 'rubber', 'gold', 'ice', 'soil', 'plant', 'peanut',
   'rubble', 'salt', 'sugar', 'organic matter', 'rust', 'mesh', 'flap →', 'flap ↓', 'flap ←', 'flap ↑',
 ];
-export const SPECIES = ['O₂', 'N₂', 'H₂', 'CO₂', 'steam', 'NH₃ gas', 'methane', 'water', 'liquid NH₃', 'oil', 'peanut butter', 'salt (dissolved)', 'sugar (dissolved)', 'NH₃ (dissolved)'];
+export const SPECIES = [
+  'O₂', 'N₂', 'H₂', 'CO₂', 'steam', 'NH₃ gas', 'methane', 'water', 'liquid NH₃', 'NH₃ (dissolved)',
+  'fat C₅₅H₉₈O₆', 'sugar C₁₂H₂₂O₁₁', 'salt NaCl', 'protein C₅H₈O₂N', 'cellulose C₆H₁₀O₅', 'chitin C₈H₁₃O₅N', 'spent zinc Zn(OH)₂', 'rust Fe₂O₃',
+];
+const ELEMENTS = ['H', 'C', 'N', 'O', 'Na', 'Cl', 'Si', 'Fe', 'Cu', 'Zn', 'Au'];
+const ORGANS = ['cuticle', 'mandibles', 'gut', 'fat body', 'tracheae', 'ganglia', 'antennae', 'legs'];
 const GAS_MM = [0.032, 0.028, 0.002, 0.044, 0.018, 0.017, 0.016];
 const MAT_COLORS = [
   '#34302a', '#80888e', '#c66b3d', '#aab2ba', '#28282c', '#afd2d7', '#78746c', '#2e2e2e', '#f2c94c', '#d2ebfa', '#6e5234', '#5d8a3a', '#c9a46a',
   '#605c56', '#f0f0f0', '#d9c39a', '#46341e', '#8c4628', '#5a6468', '#3c3c3c', '#3c3c3c', '#3c3c3c', '#3c3c3c',
 ];
 const BUILDABLE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18, 19, 20, 21, 22];
-const POURABLE = [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12];
+const POURABLE: [number, string][] = [
+  [0, 'O₂'], [1, 'N₂'], [2, 'H₂'], [3, 'CO₂'], [6, 'methane'], [7, 'water'], [8, 'liquid NH₃'],
+  [10, 'fat'], [11, 'sugar'], [12, 'salt'], [13, 'protein'], [14, 'cellulose'],
+  [100, 'peanut butter (plain)'], [101, 'peanut butter (salty-sweet)'],
+];
 
 // ------------------------------------------------------------------ scene
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -88,14 +97,15 @@ worker.onmessage = (e: MessageEvent<FromElem>) => {
   for (let k = 0; k < agentCount; k++) {
     const p = cellToWorld(m.agents[k * 3], m.agents[k * 3 + 1]);
     pos.set([p.x, 0, p.z], k * 3);
-    col.set(m.agents[k * 3 + 2] === 0 ? [0.55, 0.85, 0.3] : [0.08, 0.05, 0.02], k * 3);
+    const MARK: number[][] = [[0.55, 0.85, 0.3], [0.08, 0.05, 0.02], [0.4, 0.45, 0.2], [0.35, 0.22, 0.1], [0.95, 0.85, 0.3], [0.9, 0.5, 0.55]];
+    col.set(MARK[m.agents[k * 3 + 2]] ?? [1, 1, 1], k * 3);
   }
   agentGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   agentGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
 };
 
 // ------------------------------------------------------------------ tools (UI)
-type Tool = 'inspect' | 'dig' | 'build' | 'pour' | 'heat' | 'cool' | 'spark' | 'caterpillar' | 'beetle';
+type Tool = 'inspect' | 'dig' | 'build' | 'pour' | 'heat' | 'cool' | 'spark' | 'caterpillar' | 'beetle' | 'scalpel';
 const state = { tool: 'inspect' as Tool, mat: 1, species: 7, size: 1, speed: 1, mode: 0 };
 const bar = document.getElementById('toolbar')!;
 const sub = document.getElementById('palette')!;
@@ -111,7 +121,8 @@ function button(label: string, on: () => void, active: boolean, title = '', swat
 }
 function renderUi(): void {
   bar.replaceChildren(
-    ...(['inspect', 'dig', 'build', 'pour', 'heat', 'cool', 'spark', 'caterpillar', 'beetle'] as Tool[]).map((t) => button(t, () => (state.tool = t), state.tool === t)),
+    ...(['inspect', 'dig', 'build', 'pour', 'heat', 'cool', 'spark', 'caterpillar', 'beetle', 'scalpel'] as Tool[]).map((t) =>
+      button(t, () => (state.tool = t), state.tool === t, t === 'scalpel' ? 'cut an animal into its organs (only when zoomed right in)' : t)),
     sep(),
     ...[1, 3, 5].map((s) => button(`${s}×${s}`, () => (state.size = s), state.size === s, 'brush size')),
     sep(),
@@ -124,7 +135,7 @@ function renderUi(): void {
   );
   sub.replaceChildren();
   if (state.tool === 'build') sub.append(...BUILDABLE.map((m) => button(MATERIALS[m], () => (state.mat = m), state.mat === m, '', MAT_COLORS[m])));
-  if (state.tool === 'pour') sub.append(...POURABLE.map((s) => button(SPECIES[s], () => (state.species = s), state.species === s)));
+  if (state.tool === 'pour') sub.append(...POURABLE.map(([s, label]) => button(label, () => (state.species = s), state.species === s)));
   sub.classList.toggle('hidden', !sub.childElementCount);
 }
 function sep(): HTMLElement {
@@ -193,6 +204,8 @@ function applyTool(): void {
       case 'spark': edits.push([x, y, 4, 0]); break;
       case 'caterpillar': if (dx === 0 && dy === 0) edits.push([x, y, 5, 0]); break;
       case 'beetle': if (dx === 0 && dy === 0) edits.push([x, y, 5, 1]); break;
+      // the scalpel is delicate work: it only works zoomed right in, one cell at a time
+      case 'scalpel': if (dx === 0 && dy === 0 && cam.dist < 2.5) edits.push([x, y, 6, 0]); break;
     }
   }
   if (edits.length) post({ type: 'edits', edits });
@@ -204,21 +217,34 @@ let probeTimer = 0;
 function hudText(): string {
   const lines = [
     'RUDON · PROTOTYPE 02 · ELEMENTS (debug readout)',
-    `game time ${simTime.toFixed(1)} s   step ${stepMs.toFixed(1)} ms   animals ${agentCount}   cell ${hover ? hover.join(',') : '-'}`,
+    `game time ${simTime.toFixed(1)} s   step ${stepMs.toFixed(1)} ms   animals & organs ${agentCount}   cell ${hover ? hover.join(',') : '-'}${state.tool === 'scalpel' && cam.dist >= 2.5 ? '   (zoom in to use the scalpel)' : ''}`,
   ];
   if (probe && hover && probe.x === hover[0] && probe.y === hover[1]) {
     const d = probe.data;
     const mat = d[0] | 0;
-    lines.push(`${MATERIALS[mat]}   ${(d[1] - 273.15).toFixed(1)} °C${mat === 0 || mat >= 18 ? `   ${(d[2] / 1000).toFixed(1)} kPa` : ''}${d[4] > 0 ? '   ⚡' : ''}`);
+    const mass = d[5];
+    lines.push(`${MATERIALS[mat]}   ${(d[1] - 273.15).toFixed(1)} °C${mat === 0 || mat >= 18 ? `   ${(d[2] / 1000).toFixed(1)} kPa` : ''}${d[4] > 0 ? '   ⚡' : ''}   ${(mass * 1000).toPrecision(3)} g`);
+    // what it's made of, element by element
+    const els = ELEMENTS.map((n, e) => [n, d[24 + e]] as const).filter(([, kg]) => kg > mass * 1e-4).sort((a, b) => b[1] - a[1]);
+    lines.push('  elements: ' + els.map(([n, kg]) => `${n} ${((kg / mass) * 100).toFixed(kg / mass > 0.1 ? 0 : 1)}%`).join('  '));
     let gasMol = 0;
     for (let s = 0; s < 7; s++) gasMol += d[6 + s] / GAS_MM[s];
-    for (let s = 0; s < 14; s++) {
+    for (let s = 0; s < 18; s++) {
       const kg = d[6 + s];
       if (kg < 1e-9) continue;
       const share = s < 7 && gasMol > 0 ? `  ${((d[6 + s] / GAS_MM[s] / gasMol) * 100).toFixed(1)}%` : '';
-      lines.push(`  ${SPECIES[s].padEnd(18)} ${(kg * 1000).toPrecision(3)} g${share}`);
+      lines.push(`  ${SPECIES[s].padEnd(22)} ${(kg * 1000).toPrecision(3)} g${share}`);
     }
-    if (d[20] > 0) lines.push(`  animals here: ${d[20]}`);
+    if (d[35] > 0) {
+      const kind = d[36] === 0 ? 'caterpillar' : 'beetle';
+      lines.push(`${d[37] ? '' : 'dead '}${kind}${d[35] > 1 ? ` (+${d[35] - 1} more)` : ''}   ${(d[41] * 1000).toFixed(2)} g   nerves ${(d[38] * 100).toFixed(0)}%   tastes salt ${(d[39] * 100).toFixed(2)}%, sugar ${(d[40] * 100).toFixed(1)}%`);
+      for (let k = 0; k < 8; k++) {
+        lines.push(`  ${ORGANS[k].padEnd(10)} ${(d[42 + k * 3] * 1e6).toFixed(1).padStart(6)} mg   health ${(d[43 + k * 3] * 100).toFixed(0).padStart(3)}%   water ${(d[44 + k * 3] * 100).toFixed(0)}%`);
+      }
+    }
+    if (d[66] > 0) {
+      lines.push(`loose ${ORGANS[d[67] | 0]}${d[66] > 1 ? ` (+${d[66] - 1} more)` : ''}: ${(d[70] * 1e6).toFixed(1)} mg, ${d[68] > 0 ? `alive ${(d[68] * 100).toFixed(0)}%` : 'dead'}${d[67] === 6 ? `, tastes salt ${(d[69] * 100).toFixed(2)}%` : ''}`);
+    }
   }
   return lines.join('\n');
 }

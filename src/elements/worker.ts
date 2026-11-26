@@ -56,7 +56,7 @@ function handle(m: ToElem): void {
   else if (m.type === 'speed') speed = m.value;
   else if (m.type === 'reset') world = ex.elem_new(m.which);
   else if (m.type === 'probe') {
-    const data = new Float32Array(ex.memory.buffer, ex.elem_probe(world, m.x, m.y), 24).slice();
+    const data = new Float32Array(ex.memory.buffer, ex.elem_probe(world, m.x, m.y), 96).slice();
     ctx.postMessage({ type: 'probe', data, x: m.x, y: m.y }, [data.buffer]);
   }
 }

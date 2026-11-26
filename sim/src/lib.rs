@@ -1106,10 +1106,10 @@ pub unsafe extern "C" fn elem_agents(e: *mut Elements) -> *const f32 {
 #[no_mangle]
 pub unsafe extern "C" fn elem_agent_count(e: *mut Elements) -> u32 {
     let e = &*e;
-    e.agents.len() as u32
+    e.marker_count() as u32
 }
 
-/// 24 floats describing one cell.
+/// 96 floats describing one cell (see `Elements::probe`).
 /// # Safety
 /// `e` must come from `elem_new`.
 #[no_mangle]
