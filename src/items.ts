@@ -18,8 +18,22 @@ export type ItemType =
   | 'pump_frame' | 'pump_cover' | 'impeller' | 'motor' | 'motor_cap' | 'armature' | 'brush'
   // chiller
   | 'chiller_frame' | 'chiller_grille' | 'fan' | 'fuse' | 'compressor'
+  | 'vivarium'
   // the plumber's luck
-  | 'toolbox' | 'toolbox_lid';
+  | 'toolbox' | 'toolbox_lid'
+  // water room
+  | 'synth_frame' | 'synth_panel' | 'burner' | 'catalyst' | 'condenser' | 'igniter' | 'water_trap'
+  | 'h2_tank' | 'water_tank'
+  // caterpillar farms
+  | 'irrigator_frame' | 'sprinkler' | 'grinder_frame' | 'grinder_guard' | 'grinder_blade' | 'hopper' | 'auger' | 'gearbox'
+  // peanut processing: the separator
+  | 'separator_frame' | 'crusher_roller' | 'sieve_coarse' | 'sieve_medium' | 'sieve_fine' | 'magnet_drum' | 'blower'
+  | 'cyclone' | 'conveyor_belt' | 'pulley' | 'winnower' | 'float_tank' | 'skimmer' | 'press_plate' | 'optical_sorter'
+  // mixing and distribution
+  | 'mixer_frame' | 'mix_vat' | 'paddle' | 'salt_doser' | 'sugar_doser' | 'salt_silo' | 'sugar_silo' | 'hatch'
+  | 'pb_pump_frame' | 'cafe_counter' | 'tap' | 'dispenser'
+  // records
+  | 'cabinet' | 'drawer' | 'letter' | 'paper';
 
 export interface SlotContent {
   item: Item | null;
@@ -27,24 +41,96 @@ export interface SlotContent {
   fixed?: boolean;
 }
 
+/** An item resting loose inside another (not in any slot, not connected to anything). */
+export interface Loose {
+  item: Item;
+  x: number;
+  y: number;
+  /** The slot it's resting on; if that part is picked up, this falls. */
+  on?: string;
+}
+
 export interface Item {
   type: ItemType;
   count: number;
-  /** Peanut butter: how much (0..1). */
+  /** Peanut butter: how much (0..1), and what's mixed in (mass fractions). */
   fill?: number;
+  salt?: number;
+  sugar?: number;
   /** Valve body: how far open (0..1). */
   open?: number;
+  /** Beetle vivarium: how many beetles are left (0..1). */
+  colony?: number;
+  /** Letters: what they say is generated from this. */
+  seed?: number;
   /** Sub-items, for assemblies. */
   parts?: Record<string, SlotContent>;
+  /** Things lying loose inside it. */
+  loose?: Loose[];
 }
 
 const STACK: Partial<Record<ItemType, number>> = {
   screw: 99, bolt: 99, steel: 99, brass: 99, copper: 99, glass: 99, silicon: 99, gold: 99, plastic: 99, rubber: 99,
-  chip: 16, pin: 16, fuse: 16, brush: 16,
+  chip: 16, pin: 16, fuse: 16, brush: 16, paper: 99, pulley: 8, grinder_blade: 8,
 };
 
 export function canStack(a: Item, b: Item): boolean {
-  return a.type === b.type && !a.parts && !b.parts && a.fill === undefined && b.fill === undefined && a.count + b.count <= (STACK[a.type] ?? 1);
+  const plain = (i: Item) => !i.parts && !i.loose?.length && i.fill === undefined && i.seed === undefined && i.colony === undefined;
+  return a.type === b.type && plain(a) && plain(b) && a.count + b.count <= (STACK[a.type] ?? 1);
+}
+
+// The newer parts are drawn from a small vocabulary of shapes.
+type Shape = 'frame' | 'plate' | 'tank' | 'mesh' | 'coil' | 'roller' | 'disc' | 'funnel' | 'nozzle' | 'box' | 'blade' | 'auger'
+  | 'magnet' | 'belt' | 'paddle' | 'eye' | 'spark' | 'doser' | 'drawer' | 'paper' | 'fanlike';
+const SHAPES: Partial<Record<ItemType, [Shape, string, number?]>> = {
+  synth_frame: ['frame', '#7a8c96'], h2_tank: ['tank', '#c9cfd4'], water_tank: ['tank', '#5d8fb8'],
+  irrigator_frame: ['frame', '#4d7a4a'], grinder_frame: ['frame', '#6b5a3a'], separator_frame: ['frame', '#5f6b70'],
+  mixer_frame: ['frame', '#8a6a3a'], salt_silo: ['tank', '#e8e8e8'], sugar_silo: ['tank', '#d9c39a'],
+  pb_pump_frame: ['frame', '#8a5a2a'], cafe_counter: ['frame', '#b0a48a'], cabinet: ['frame', '#7d8a7a'],
+  synth_panel: ['plate', '#8e9aa3'], grinder_guard: ['plate', '#7a6a4a'],
+  burner: ['box', '#c0602a'], catalyst: ['mesh', '#e0c060', 3], condenser: ['coil', '#c66b3d'], igniter: ['spark', '#e9c46a'],
+  water_trap: ['tank', '#7fb3d9'], sprinkler: ['nozzle', '#9aa3a8'], grinder_blade: ['blade', '#b9b9b9'], hopper: ['funnel', '#8d959b'],
+  auger: ['auger', '#9a9a9a'], gearbox: ['box', '#6d7378'], crusher_roller: ['roller', '#8d959b'],
+  sieve_coarse: ['mesh', '#a0a0a0', 3], sieve_medium: ['mesh', '#a0a0a0', 5], sieve_fine: ['mesh', '#a0a0a0', 8],
+  magnet_drum: ['magnet', '#c0392b'], blower: ['fanlike', '#6d8a96'], cyclone: ['funnel', '#9aa3a8'], conveyor_belt: ['belt', '#3a3a3a'],
+  pulley: ['disc', '#8c8c8c'], winnower: ['box', '#a08a5a'], float_tank: ['tank', '#6fa0c0'], skimmer: ['paddle', '#9aa3a8'],
+  press_plate: ['plate', '#8d959b'], optical_sorter: ['eye', '#2e3a4a'], mix_vat: ['tank', '#b8893a'], paddle: ['paddle', '#c9c9c9'],
+  salt_doser: ['doser', '#f1f1f1'], sugar_doser: ['doser', '#d9c39a'], hatch: ['disc', '#9aa3a8'], tap: ['nozzle', '#c9cfd4'],
+  dispenser: ['doser', '#a8732f'], drawer: ['drawer', '#8d9a8a'], letter: ['paper', '#f1ead6'], paper: ['paper', '#e8e0cc'],
+};
+
+function drawShape(g: CanvasRenderingContext2D, item: Item, shape: Shape, color: string, n = 4): void {
+  switch (shape) {
+    case 'frame': rr(g, -20, -18, 40, 36, 4, color); rr(g, -14, -12, 28, 24, 2, '#00000055', 2); break;
+    case 'plate': rr(g, -20, -14, 40, 28, 3, color); for (const [x, y] of [[-15, -9], [15, -9], [-15, 9], [15, 9]]) { g.beginPath(); g.arc(x, y, 2, 0, Math.PI * 2); g.fillStyle = INK; g.fill(); } break;
+    case 'tank': rr(g, -14, -20, 28, 40, 12, color); g.strokeStyle = '#00000044'; g.lineWidth = 2; g.beginPath(); g.moveTo(-14, -6); g.lineTo(14, -6); g.moveTo(-14, 8); g.lineTo(14, 8); g.stroke(); break;
+    case 'mesh': rr(g, -18, -14, 36, 28, 2, '#00000022'); g.strokeStyle = color; g.lineWidth = 1.5;
+      for (let k = 1; k < n * 2; k++) { const t = -18 + (36 * k) / (n * 2); g.beginPath(); g.moveTo(t, -14); g.lineTo(t, 14); g.stroke(); const u = -14 + (28 * k) / (n * 2); g.beginPath(); g.moveTo(-18, u); g.lineTo(18, u); g.stroke(); }
+      g.beginPath(); g.roundRect(-18, -14, 36, 28, 2); g.strokeStyle = INK; g.lineWidth = 2.5; g.stroke(); break;
+    case 'coil': g.strokeStyle = INK; g.lineWidth = 6; g.beginPath(); for (let k = 0; k < 5; k++) g.arc(-14 + k * 7, 0, 6, Math.PI, 0); g.stroke(); g.strokeStyle = color; g.lineWidth = 3; g.stroke(); break;
+    case 'roller': rr(g, -20, -9, 40, 18, 9, color); g.strokeStyle = '#00000055'; g.lineWidth = 1.5; for (let k = -14; k < 16; k += 5) { g.beginPath(); g.moveTo(k, -8); g.lineTo(k + 3, 8); g.stroke(); } break;
+    case 'disc': circ(g, 0, 0, 16, color); circ(g, 0, 0, 4, '#3a3a3a', 2); break;
+    case 'funnel': g.beginPath(); g.moveTo(-18, -16); g.lineTo(18, -16); g.lineTo(5, 10); g.lineTo(5, 18); g.lineTo(-5, 18); g.lineTo(-5, 10); g.closePath(); inked(g, color); break;
+    case 'nozzle': rr(g, -6, -18, 12, 22, 3, color); g.beginPath(); g.moveTo(-10, 4); g.lineTo(10, 4); g.lineTo(6, 14); g.lineTo(-6, 14); g.closePath(); inked(g, color); break;
+    case 'box': rr(g, -16, -14, 32, 28, 4, color); circ(g, 0, 0, 6, '#00000044', 2); break;
+    case 'blade': g.beginPath(); g.moveTo(0, -18); g.lineTo(6, 0); g.lineTo(0, 18); g.lineTo(-6, 0); g.closePath(); inked(g, color); break;
+    case 'auger': g.beginPath(); g.rect(-3, -20, 6, 40); inked(g, '#666', 2); g.strokeStyle = color; g.lineWidth = 4; g.beginPath(); for (let y = -18; y < 20; y += 6) { g.moveTo(-12, y); g.lineTo(12, y + 4); } g.stroke(); break;
+    case 'magnet': g.strokeStyle = INK; g.lineWidth = 12; g.beginPath(); g.arc(0, -2, 12, Math.PI, 0); g.lineTo(12, 14); g.moveTo(-12, -2); g.lineTo(-12, 14); g.stroke();
+      g.strokeStyle = color; g.lineWidth = 7; g.stroke(); g.fillStyle = '#c9c9c9'; g.fillRect(-16, 10, 8, 6); g.fillRect(8, 10, 8, 6); break;
+    case 'belt': g.beginPath(); g.ellipse(0, 0, 20, 10, 0, 0, Math.PI * 2); g.ellipse(0, 0, 14, 5, 0, 0, Math.PI * 2, true); inked(g, color); break;
+    case 'paddle': g.beginPath(); g.rect(-2, -20, 4, 24); inked(g, '#777', 2); rr(g, -12, 2, 24, 14, 3, color); break;
+    case 'eye': rr(g, -18, -12, 36, 24, 6, color); circ(g, 0, 0, 8, '#9fd3ff', 2); g.fillStyle = INK; g.beginPath(); g.arc(0, 0, 3, 0, Math.PI * 2); g.fill(); break;
+    case 'spark': rr(g, -5, -6, 10, 22, 2, '#e8e0cc'); g.strokeStyle = color; g.lineWidth = 3; g.beginPath(); g.moveTo(0, -6); g.lineTo(-6, -14); g.lineTo(3, -12); g.lineTo(-2, -20); g.stroke(); break;
+    case 'doser': g.beginPath(); g.moveTo(-14, -18); g.lineTo(14, -18); g.lineTo(14, 4); g.lineTo(4, 14); g.lineTo(-4, 14); g.lineTo(-14, 4); g.closePath(); inked(g, color); rr(g, -3, 12, 6, 8, 1, '#777', 2); break;
+    case 'drawer': rr(g, -20, -12, 40, 24, 2, color); rr(g, -6, -3, 12, 6, 3, '#c9c9c9', 2);
+      if (item.parts) { const n2 = Object.values(item.parts).filter((c) => c.item).length; g.fillStyle = '#f1ead6'; for (let k = 0; k < n2; k++) g.fillRect(-16 + k * 8, -16, 6, 6); } break;
+    case 'paper':
+      g.save(); g.rotate(-0.15); rr(g, -14, -18, 28, 36, 1, color, 2);
+      g.strokeStyle = '#5a6b8a88'; g.lineWidth = 1.2;
+      if (item.type === 'letter') for (let k = 0; k < 6; k++) { g.beginPath(); g.moveTo(-9, -11 + k * 5); g.lineTo(9 - (k % 3) * 3, -11 + k * 5); g.stroke(); }
+      g.restore(); break;
+    case 'fanlike': circ(g, 0, 0, 18, '#3d4c56'); for (let k = 0; k < 6; k++) { const a = (k * Math.PI) / 3; g.beginPath(); g.moveTo(0, 0); g.lineTo(Math.cos(a) * 15, Math.sin(a) * 15); g.lineTo(Math.cos(a + 0.4) * 15, Math.sin(a + 0.4) * 15); g.closePath(); inked(g, color, 1.5); } break;
+  }
 }
 
 const INK = '#2a2118';
@@ -197,6 +283,18 @@ export function drawItem(g: CanvasRenderingContext2D, item: Item, x: number, y: 
       rr(g, -14, -6, 28, 12, 5, '#e8e0cc'); g.beginPath(); g.rect(-18, -5, 6, 10); inked(g, '#c9c9c9', 2); g.beginPath(); g.rect(12, -5, 6, 10); inked(g, '#c9c9c9', 2);
       break;
     case 'compressor': rr(g, -14, -18, 28, 36, 10, '#4d6270'); g.beginPath(); g.rect(-4, -24, 8, 8); inked(g, '#8c8c8c', 2); break;
+    case 'vivarium': {
+      rr(g, -18, -14, 36, 28, 4, '#cfe3e055');
+      const n = Math.round((item.colony ?? 1) * 8);
+      g.fillStyle = '#1a1208';
+      for (let k = 0; k < n; k++) { g.beginPath(); g.ellipse(-12 + (k * 7) % 26, -6 + ((k * 13) % 14), 2.5, 1.8, k, 0, Math.PI * 2); g.fill(); }
+      g.beginPath(); g.roundRect(-18, -14, 36, 28, 4); g.strokeStyle = INK; g.lineWidth = 2.5; g.stroke();
+      break;
+    }
+    default: {
+      const spec = SHAPES[item.type];
+      if (spec) drawShape(g, item, spec[0], spec[1], spec[2]);
+    }
   }
   g.restore();
 }

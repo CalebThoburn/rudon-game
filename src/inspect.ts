@@ -84,9 +84,17 @@ export interface Hooks {
   removeMachine(inst: Instance): void;
   /** Broken into materials. */
   broke(inst: Instance, into: Item[]): void;
+  /** Something fell out of this assembly onto the floor. */
+  fall(inst: Instance, item: Item): void;
+  /** Dropped outside any panel or hotbar: put it in the world. False = couldn't. */
+  drop(item: Item, clientX: number, clientY: number): boolean;
 }
 
-type Origin = { kind: 'slot'; inst: Instance; slot: SlotDef } | { kind: 'inv'; index: number } | { kind: 'frame'; inst: Instance };
+type Origin =
+  | { kind: 'slot'; inst: Instance; slot: SlotDef }
+  | { kind: 'loose'; inst: Instance; x: number; y: number; on?: string }
+  | { kind: 'inv'; index: number }
+  | { kind: 'frame'; inst: Instance };
 type Turn = { slot: SlotDef | null; dir: 'out' | 'in' | 'break'; progress: number; hold: number; x: number; y: number };
 
 export function makeCtx(inst: Instance, state: Float64Array | null, send: Hooks['send'], opts: Partial<Ctx> = {}): Ctx {
@@ -123,6 +131,34 @@ export function renderInstance(g: CanvasRenderingContext2D, c: Ctx, turn: Turn |
     g.restore();
   }
   inst.def.drawExterior?.(g, c);
+  // Things lying loose inside, connected to nothing.
+  for (const l of inst.item.loose ?? []) {
+    g.save();
+    g.translate(l.x, l.y);
+    g.rotate(((l.x * 7 + l.y * 3) % 10) / 10 - 0.5);
+    drawItem(g, l.item, 0, 0, 64);
+    g.restore();
+  }
+}
+
+/** The part in a slot was picked up: whatever rested on it, and isn't fixed, falls. */
+export function cascade(inst: Instance, slotId: string, fall: (item: Item) => void): void {
+  const parts = inst.item.parts ?? {};
+  for (const s of inst.asm.slots) {
+    const c = parts[s.id];
+    if (!c?.item || (s.fix && c.fixed)) continue;
+    if (s.on === slotId || s.locks === slotId) {
+      const it = c.item;
+      parts[s.id] = { item: null };
+      fall(it);
+      cascade(inst, s.id, fall);
+    }
+  }
+  const loose = inst.item.loose;
+  if (loose) {
+    for (const l of loose.filter((l) => l.on === slotId)) fall(l.item);
+    inst.item.loose = loose.filter((l) => l.on !== slotId);
+  }
 }
 
 function drawFastener(g: CanvasRenderingContext2D, c: Ctx, f: SlotDef, turning: Turn | null): void {
@@ -281,6 +317,16 @@ export class InspectPanel {
     };
     let needTool: string | null = null;
 
+    // 0. anything lying loose on top
+    const loose = inst.item.loose ?? [];
+    for (let k = loose.length - 1; k >= 0; k--) {
+      const l = loose[k];
+      if (!near(l.x, l.y, 34)) continue;
+      loose.splice(k, 1);
+      this.beginDrag(l.item, { kind: 'loose', inst, x: l.x, y: l.y, on: l.on });
+      return;
+    }
+
     // 1. exterior controls
     for (const ctrl of inst.def.controls) if (!ctrl.behind && control(ctrl)) return;
 
@@ -305,11 +351,7 @@ export class InspectPanel {
         inst.vis[`rattle:${s.id}`] = 1;
         return;
       }
-      for (const f of holders) {
-        const it = parts[f.id]?.item;
-        if (it && !this.inv.add(it)) return; // pockets full: leave it be
-        parts[f.id] = { item: null };
-      }
+      // Loose screws in its holes come away with it, and fall.
       this.beginDrag(this.removeFrom(inst, s), { kind: 'slot', inst, slot: s });
       return;
     }
@@ -392,6 +434,7 @@ export class InspectPanel {
     const parts = inst.item.parts!;
     const item = parts[s.id].item!;
     parts[s.id] = { item: null };
+    cascade(inst, s.id, (it) => this.hooks.fall(inst, it));
     const c = this.ctx(inst);
     inst.def.onRemove?.(c, s.id, item);
     inst.def.sync(c);
@@ -437,15 +480,18 @@ export class InspectPanel {
       return;
     }
 
-    const slotEl = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest('.slot') as HTMLElement | null;
+    const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const slotEl = target?.closest('.slot') as HTMLElement | null;
     if (slotEl) {
       if (this.inv.placeAt(Number(slotEl.dataset.slot), item) || this.inv.add(item)) return;
       return this.returnTo(origin, item);
     }
 
+    // Into the open panel: a matching slot, or else it just rests where it's put.
     const inst = this.current;
-    if (inst && inst.item !== item) {
-      const { x, y } = this.mouse;
+    const { x, y } = this.mouse;
+    const inPanel = target === this.canvas && x >= 0 && x <= PW && y >= 0 && y <= PH;
+    if (inst && inPanel && inst.item !== item) {
       for (const s of inst.asm.slots) {
         if (!this.accepts(inst, s, item)) continue;
         const hit = s.rect
@@ -453,17 +499,31 @@ export class InspectPanel {
           : Math.hypot(x - s.x, y - s.y) < s.r + 16;
         if (hit) return this.install(inst, s, item);
       }
+      this.rest(inst, item, x, y);
+      return;
     }
 
-    if (origin.kind === 'slot') {
-      if (!this.inv.add(item)) this.returnTo(origin, item);
-    } else if (!this.inv.placeAt(origin.index, item) && !this.inv.add(item)) {
-      this.returnTo(origin, item);
+    // Anywhere else: onto the floor.
+    if (this.hooks.drop(item, e.clientX, e.clientY)) return;
+    if (!this.inv.add(item)) this.returnTo(origin, item);
+  }
+
+  /** Leave an item lying loose in an assembly, on whatever part is under it. */
+  private rest(inst: Instance, item: Item, x: number, y: number): void {
+    const parts = inst.item.parts ?? {};
+    let on: string | undefined;
+    for (const s of inst.asm.slots) {
+      if (!parts[s.id]?.item || !this.reach(inst, s)) continue;
+      const hit = s.rect ? x >= s.rect[0] && x <= s.rect[0] + s.rect[2] && y >= s.rect[1] && y <= s.rect[1] + s.rect[3] : Math.hypot(x - s.x, y - s.y) < s.r;
+      if (hit) on = s.id; // later slots are drawn on top
     }
+    (inst.item.loose ??= []).push({ item, x, y, on });
+    this.hooks.changed(inst);
   }
 
   private returnTo(origin: Origin, item: Item): void {
     if (origin.kind === 'slot') this.install(origin.inst, origin.slot, item);
+    else if (origin.kind === 'loose') (origin.inst.item.loose ??= []).push({ item, x: origin.x, y: origin.y, on: origin.on });
     else if (origin.kind === 'inv') this.inv.placeAt(origin.index, item) || this.inv.add(item);
   }
 

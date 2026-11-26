@@ -56,7 +56,7 @@ const G_COOLANT_AMBIENT: f64 = 10.0; // W/K
 const PB_MASS: f64 = 1.5; // kg of peanut butter in a full jar
 const CP_PB: f64 = 2000.0; // J/(kg·K)
 const C_JAR: f64 = 400.0; // J/K: brass jar itself
-const G_PB: f64 = 15.0; // W/K: finned jar ↔ room air (too little coupling and the engine hunts)
+const G_PB: f64 = 6.0; // W/K: jar ↔ room air. Slow on its own: without beetles the engine hunts
 const MU_REF: f64 = 300.0; // Pa·s at T_MU_REF
 const T_MU_REF: f64 = 22.0; // °C
 const MU_B: f64 = 5000.0; // K: Arrhenius activation temperature (Ea/R)
@@ -67,10 +67,71 @@ const OMEGA_REF: f64 = 1.0; // rad/s: escapement rate
 const MOTOR_TORQUE: f64 = K_GEOM * MU_REF * OMEGA_REF;
 const HOLD_DAMPING: f64 = 2.0; // N·m·s: a hand gripping the drum
 const BEARING_DAMPING: f64 = 0.005; // N·m·s: drum spinning with no jar fitted
-const VALVE_GAIN: f64 = 0.002; // valve travel per radian of differential output (too much and it hunts)
+const VALVE_GAIN: f64 = 0.004; // valve travel per radian of differential output
 const DRAIN_RATE: f64 = 0.003; // jar fraction per second, tap open
 const SUPPLY_RATE: f64 = 0.0005; // jar fraction per second, cafeteria supply line
 const CHIME_ARM_ERR: f64 = 0.02; // rad/s of drum disagreement that arms the chime
+
+// ---------- beetles: the engine's proportional term ----------
+// A colony in the vivarium clusters toward the warm side; its weight on the
+// balance lever pushes the valve stem in proportion to the temperature error.
+// They only stay while the peanut butter they eat contains salt AND sugar.
+const KP_BEETLES: f64 = 0.12; // valve travel per °C of error, full colony
+const BEETLE_RATE: f64 = 0.0002; // colony change per s
+const BEETLE_EAT: f64 = 0.00008; // jar fraction per s eaten by a full colony
+const SALT_NEED: f64 = 0.010; // mass fraction that keeps them interested
+const SUGAR_NEED: f64 = 0.040;
+const PB_JAR_L: f64 = 1.5; // litres in a full jar
+
+// ---------- air ----------
+pub const ZONES: usize = 11;
+pub const Z_CORRIDOR: usize = 0; // server rooms are zones 1..=3
+pub const Z_PROCESS: usize = 4;
+pub const Z_RECORDS: usize = 5;
+pub const Z_WATER: usize = 6;
+pub const Z_FARM: [usize; 2] = [7, 8];
+pub const Z_MIXING: usize = 9;
+pub const Z_CAFE: usize = 10;
+const N_ROOM: f64 = 7900.0; // mol of air in an 8×8×3 m room
+const N_CORRIDOR: f64 = 52000.0;
+const K_DOOR: f64 = 0.0015; // fraction of a room's air swapped with the corridor per s
+const K_OUT: f64 = 0.0005; // corridor ↔ the rest of the building
+const O2_FRESH: f64 = 0.209;
+const CO2_FRESH: f64 = 0.0004;
+
+// ---------- the plant: water, peanuts, peanut butter ----------
+pub const MACHINES: usize = 13;
+pub const M_SYNTH: usize = 0; // water synthesiser (burns H2 in room oxygen)
+pub const M_H2: usize = 1; // hydrogen tank
+pub const M_WATER: usize = 2; // water tank
+pub const M_IRRIGATOR: [usize; 2] = [3, 4];
+pub const M_GRINDER: [usize; 2] = [5, 6]; // grinds a whole farm room at harvest
+pub const M_SEPARATOR: usize = 7;
+pub const M_MIXER: usize = 8; // extra bit 0: salt doser, bit 1: sugar doser
+pub const M_SALT: usize = 9;
+pub const M_SUGAR: usize = 10;
+pub const M_PB_PUMP: usize = 11;
+pub const M_CAFE: usize = 12;
+const WATER_RATE: f64 = 0.01; // L/s at full oxygen
+const H2_PER_L: f64 = 111.0; // mol H2 per litre of water
+const O2_PER_L: f64 = 55.5;
+const GROW_TIME: f64 = 43200.0; // s for a crop to ripen (fresh air, 100 caterpillars, wet soil)
+const CAT_K: f64 = 100.0; // caterpillars for half-speed propagation
+const CAT_MAX: f64 = 400.0;
+const CAT_BREED: f64 = 0.0002;
+const CAT_BREATH: f64 = 0.00005; // mol O2 → CO2 per caterpillar per s
+const PHOTO: f64 = 0.06; // mol CO2 → O2 per s at full growth
+const SOIL_USE: f64 = 0.00004;
+const IRRIGATE: f64 = 0.0002; // soil fraction per s
+const IRRIGATE_L: f64 = 20.0; // litres per unit of soil moisture
+const YIELD_PEANUT: f64 = 80.0; // kg of peanuts in a ripe room
+const YIELD_OTHER: f64 = 120.0; // kg of leaves, soil, caterpillars...
+const SEP_RATE: f64 = 0.03; // kg of mush per s
+const MIX_RATE: f64 = 0.01; // L of paste per s
+const SALT_DOSE: f64 = 0.016; // per L of paste
+const SUGAR_DOSE: f64 = 0.065;
+const CAFE_PB: f64 = 0.003; // L/s eaten in the cafeteria
+const CAFE_WATER: f64 = 0.003;
 
 const MAX_SUBSTEP: f64 = 0.5; // s of game time
 
@@ -91,7 +152,8 @@ pub const E_ACTUATED: u32 = 4; // differential + lead screw + linkage pin all pr
 pub const E_LEDGER: u32 = 8; // ledger drum + its drive motor present
 pub const E_REFERENCE: u32 = 16; // reference drum + escapement present
 pub const E_JAR: u32 = 32; // peanut butter jar fitted
-pub const E_ALL: u32 = 63;
+pub const E_VIVARIUM: u32 = 64; // beetle vivarium fitted
+pub const E_ALL: u32 = 127;
 
 #[derive(Clone, Debug)]
 pub struct Room {
@@ -121,8 +183,79 @@ pub struct Engine {
     pub supply_connected: bool,
     pub holding: bool,
     pub chimes: u32,
+    /// Beetle colony, 0..1.
+    pub beetles: f64,
+    pub jar_salt: f64,
+    pub jar_sugar: f64,
+    /// The valve's actual position: the lead screw's integral plus the beetles' push.
+    pub valve_out: f64,
     last_err_positive: bool,
     chime_armed: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Air {
+    pub o2: f64,
+    pub co2: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Farm {
+    pub growth: f64,
+    pub cats: f64,
+    pub soil: f64,
+    pub harvests: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Plant {
+    pub works: [bool; MACHINES],
+    pub on: [bool; MACHINES],
+    pub extra: [u32; MACHINES],
+    pub air: [Air; ZONES],
+    pub farms: [Farm; 2],
+    pub water_l: f64,
+    pub h2_mol: f64,
+    pub mush_kg: f64,
+    pub mush_peanut_kg: f64,
+    pub paste_l: f64,
+    pub pb_l: f64,
+    pub pb_salt: f64,
+    pub pb_sugar: f64,
+    pub salt_kg: f64,
+    pub sugar_kg: f64,
+    pub synth_rate: f64,
+    pub sep_rate: f64,
+    pub mix_rate: f64,
+    pub pb_flowing: bool,
+}
+
+impl Plant {
+    fn new() -> Self {
+        let mut p = Plant {
+            works: [true; MACHINES],
+            on: [true; MACHINES],
+            extra: [0; MACHINES],
+            water_l: 500.0,
+            h2_mol: 200_000.0,
+            paste_l: 10.0,
+            pb_l: 150.0,
+            pb_salt: 0.015,
+            pb_sugar: 0.06,
+            salt_kg: 40.0,
+            sugar_kg: 150.0,
+            ..Default::default()
+        };
+        p.extra[M_MIXER] = 3;
+        for a in &mut p.air {
+            *a = Air { o2: O2_FRESH, co2: CO2_FRESH };
+        }
+        p.farms = [Farm { growth: 0.3, cats: 200.0, soil: 0.6, harvests: 0 }, Farm { growth: 0.7, cats: 200.0, soil: 0.6, harvests: 0 }];
+        p
+    }
+    fn running(&self, m: usize) -> bool {
+        self.works[m] && self.on[m]
+    }
 }
 
 impl Engine {
@@ -154,6 +287,7 @@ pub struct Sector {
     pub flows: [f64; ROOMS],
     pub heat_removed: [f64; ROOMS],
     pub room_load: [f64; ROOMS],
+    pub plant: Plant,
     pub time: f64,
 }
 
@@ -171,6 +305,10 @@ impl Sector {
             supply_connected: true,
             holding: false,
             chimes: 0,
+            beetles: 1.0,
+            jar_salt: 0.015,
+            jar_sugar: 0.06,
+            valve_out: 0.3,
             last_err_positive: true,
             chime_armed: false,
         };
@@ -194,6 +332,7 @@ impl Sector {
             flows: [0.0; ROOMS],
             heat_removed: [0.0; ROOMS],
             room_load: [0.0; ROOMS],
+            plant: Plant::new(),
             time: 0.0,
         }
     }
@@ -221,7 +360,7 @@ impl Sector {
         let mut cond = [0.0; ROOMS];
         for (c, e) in cond.iter_mut().zip(&self.engines) {
             if e.branch_open() {
-                let x = e.valve.max(VALVE_MIN);
+                let x = e.valve_out.max(VALVE_MIN);
                 *c = 1.0 / (R_PIPE + R_VALVE_OPEN / (x * x));
             }
         }
@@ -274,7 +413,12 @@ impl Sector {
         self.coolant_temp +=
             (q_total - self.chiller_power + G_COOLANT_AMBIENT * (T_AMBIENT - ts)) / C_COOLANT * dt;
 
-        // 5. Reconciliation Engines.
+        // 5. The plant (air, water, peanuts, peanut butter) first: it decides
+        //    whether there's peanut butter in the supply lines.
+        self.plant_step(dt);
+        let pb_available = self.plant.pb_flowing;
+
+        // 6. Reconciliation Engines.
         for i in 0..ROOMS {
             let room_t = self.rooms[i].temp;
             let e = &mut self.engines[i];
@@ -285,8 +429,17 @@ impl Sector {
                 if e.drain_open {
                     e.pb_fill -= DRAIN_RATE * dt;
                 }
-                if e.supply_connected {
-                    e.pb_fill += SUPPLY_RATE * dt;
+                // Beetles eat what seeps from the jar.
+                if e.has(E_VIVARIUM) {
+                    e.pb_fill -= BEETLE_EAT * e.beetles * dt;
+                }
+                if e.supply_connected && pb_available && e.pb_fill < 1.0 {
+                    let added = (SUPPLY_RATE * dt).min(1.0 - e.pb_fill);
+                    let total = e.pb_fill.max(0.0) + added;
+                    e.jar_salt = (e.jar_salt * e.pb_fill.max(0.0) + self.plant.pb_salt * added) / total;
+                    e.jar_sugar = (e.jar_sugar * e.pb_fill.max(0.0) + self.plant.pb_sugar * added) / total;
+                    e.pb_fill += added;
+                    self.plant.pb_l = (self.plant.pb_l - added * PB_JAR_L).max(0.0);
                 }
                 e.pb_fill = e.pb_fill.clamp(0.0, 1.0);
                 let c_pb = PB_MASS * CP_PB * e.pb_fill + C_JAR;
@@ -315,6 +468,17 @@ impl Sector {
                 // Differential output = half the speed difference → lead screw → valve.
                 e.valve = (e.valve + VALVE_GAIN * 0.5 * err * dt).clamp(0.0, 1.0);
             }
+            // Beetles come and go with the salt and sugar in their food.
+            if e.has(E_VIVARIUM) {
+                let lure = if e.has(E_JAR) && e.pb_fill > 0.01 {
+                    (e.jar_salt / SALT_NEED).min(1.0) * (e.jar_sugar / SUGAR_NEED).min(1.0)
+                } else {
+                    0.0
+                };
+                e.beetles = (e.beetles + BEETLE_RATE * (2.0 * lure - 1.0) * dt).clamp(0.0, 1.0);
+            }
+            let push = if e.has(E_VIVARIUM) && e.has(E_VALVE) { KP_BEETLES * e.beetles * (room_t - T_MU_REF) } else { 0.0 };
+            e.valve_out = (e.valve + push).clamp(0.0, 1.0);
             // The chime rings when a real imbalance has been reconciled.
             if err.abs() > CHIME_ARM_ERR {
                 e.chime_armed = true;
@@ -330,6 +494,111 @@ impl Sector {
         }
 
         self.time += dt;
+    }
+
+    fn plant_step(&mut self, dt: f64) {
+        let p = &mut self.plant;
+
+        // Air: every room swaps air with the corridor through its door; the
+        // corridor swaps with the rest of the building.
+        let corr = p.air[Z_CORRIDOR].clone();
+        let mut d_o2 = 0.0;
+        let mut d_co2 = 0.0;
+        for z in 1..ZONES {
+            let a = &mut p.air[z];
+            let x_o2 = K_DOOR * (corr.o2 - a.o2) * dt;
+            let x_co2 = K_DOOR * (corr.co2 - a.co2) * dt;
+            a.o2 += x_o2;
+            a.co2 += x_co2;
+            d_o2 -= x_o2 * N_ROOM;
+            d_co2 -= x_co2 * N_ROOM;
+        }
+        let c = &mut p.air[Z_CORRIDOR];
+        c.o2 += d_o2 / N_CORRIDOR + K_OUT * (O2_FRESH - c.o2) * dt;
+        c.co2 += d_co2 / N_CORRIDOR + K_OUT * (CO2_FRESH - c.co2) * dt;
+
+        // Water: H2 burnt in the water room's own oxygen.
+        let o2w = p.air[Z_WATER].o2;
+        let tank = p.works[M_WATER]; // no tank: nowhere to put water, nothing to draw from
+        p.synth_rate = if p.running(M_SYNTH) && p.works[M_H2] && tank && p.h2_mol > 0.0 && p.water_l < 2000.0 {
+            WATER_RATE * ((o2w - 0.10) / 0.08).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.water_l += p.synth_rate * dt;
+        p.h2_mol = (p.h2_mol - p.synth_rate * H2_PER_L * dt).max(0.0);
+        p.air[Z_WATER].o2 -= p.synth_rate * O2_PER_L * dt / N_ROOM;
+
+        // Farms: caterpillars propagate the peanuts; plants need water and CO2.
+        for k in 0..2 {
+            let z = Z_FARM[k];
+            let irrigating = p.running(M_IRRIGATOR[k]);
+            let grinding = p.running(M_GRINDER[k]);
+            let f = &mut p.farms[k];
+            if irrigating && tank && f.soil < 0.6 && p.water_l > 0.0 {
+                let ds = IRRIGATE * dt;
+                f.soil += ds;
+                p.water_l = (p.water_l - ds * IRRIGATE_L).max(0.0);
+            }
+            let water_ok = (f.soil / 0.3).clamp(0.0, 1.0);
+            let co2 = p.air[z].co2;
+            let co2_ok = co2 / (co2 + 0.0004) * 2.0; // 1.0 at fresh air
+            let cat_ok = f.cats / (f.cats + CAT_K) * 2.0; // 1.0 at 100 caterpillars
+            let grow = if f.growth < 1.0 { water_ok * co2_ok.min(2.0) * cat_ok / GROW_TIME } else { 0.0 };
+            f.growth = (f.growth + grow * dt).min(1.0);
+            f.soil = (f.soil - SOIL_USE * f.growth * dt).max(0.0);
+            f.cats += CAT_BREED * f.cats * (1.0 - f.cats / CAT_MAX) * dt;
+            let photo = PHOTO * f.growth * water_ok * (co2 / (co2 + 0.0004));
+            p.air[z].o2 += (photo - CAT_BREATH * f.cats) * dt / N_ROOM;
+            p.air[z].co2 += (CAT_BREATH * f.cats - photo) * dt / N_ROOM;
+            p.air[z].co2 = p.air[z].co2.max(0.0);
+            // Harvest: the whole room goes through the grinder.
+            if f.growth >= 1.0 && grinding {
+                let picked = (f.cats / CAT_K).min(1.0); // caterpillars gather the peanuts first
+                p.mush_kg += YIELD_PEANUT * picked + YIELD_OTHER + YIELD_PEANUT * (1.0 - picked);
+                p.mush_peanut_kg += YIELD_PEANUT * picked;
+                f.growth = 0.02;
+                f.cats = 20.0; // the egg reserve
+                f.harvests += 1;
+            }
+        }
+
+        // Separator: every part needed, no simpler way.
+        p.sep_rate = if p.running(M_SEPARATOR) && p.mush_kg > 0.0 { SEP_RATE.min(p.mush_kg / dt) } else { 0.0 };
+        if p.sep_rate > 0.0 {
+            let processed = p.sep_rate * dt;
+            let frac = p.mush_peanut_kg / p.mush_kg;
+            p.paste_l += processed * frac;
+            p.mush_peanut_kg = (p.mush_peanut_kg - processed * frac).max(0.0);
+            p.mush_kg = (p.mush_kg - processed).max(0.0);
+        }
+
+        // Mixer: paste + salt + sugar.
+        p.mix_rate = if p.running(M_MIXER) && p.paste_l > 0.0 && p.pb_l < 400.0 { MIX_RATE.min(p.paste_l / dt) } else { 0.0 };
+        if p.mix_rate > 0.0 {
+            let paste = p.mix_rate * dt;
+            let salt = if p.extra[M_MIXER] & 1 != 0 && p.works[M_SALT] { (SALT_DOSE * paste).min(p.salt_kg) } else { 0.0 };
+            let sugar = if p.extra[M_MIXER] & 2 != 0 && p.works[M_SUGAR] { (SUGAR_DOSE * paste).min(p.sugar_kg) } else { 0.0 };
+            let added = paste + salt + sugar;
+            let total = p.pb_l + added;
+            p.pb_salt = (p.pb_salt * p.pb_l + salt) / total;
+            p.pb_sugar = (p.pb_sugar * p.pb_l + sugar) / total;
+            p.pb_l = total;
+            p.paste_l -= paste;
+            p.salt_kg -= salt;
+            p.sugar_kg -= sugar;
+        }
+
+        // Distribution: the PB pump feeds the engines' supply lines and the cafeteria.
+        p.pb_flowing = p.running(M_PB_PUMP) && p.pb_l > 0.0;
+        if p.running(M_CAFE) {
+            if p.pb_flowing {
+                p.pb_l = (p.pb_l - CAFE_PB * dt).max(0.0);
+            }
+            if p.works[M_WATER] {
+                p.water_l = (p.water_l - CAFE_WATER * dt).max(0.0);
+            }
+        }
     }
 
     pub fn command(&mut self, kind: u32, index: usize, value: f64) {
@@ -361,6 +630,16 @@ impl Sector {
                 self.chiller_on = bits & 2 != 0;
             }
             26 => self.fans = bits.min(2) as u8,
+            27 => self.engines[room].jar_salt = value.max(0.0),
+            28 => self.engines[room].jar_sugar = value.max(0.0),
+            29 => self.engines[room].beetles = value.clamp(0.0, 1.0),
+            30 => {
+                if index < MACHINES {
+                    self.plant.works[index] = bits & 1 != 0;
+                    self.plant.on[index] = bits & 2 != 0;
+                    self.plant.extra[index] = bits >> 2;
+                }
+            }
             _ => {}
         }
     }
@@ -385,20 +664,69 @@ impl Sector {
             o[7] = e.ledger_omega;
             o[8] = e.ledger_angle;
             o[9] = e.ref_angle;
-            o[10] = e.valve;
+            o[10] = e.valve_out;
             o[11] = e.parts as f64;
             o[12] = e.drain_open as u8 as f64;
             o[13] = e.supply_connected as u8 as f64;
             o[14] = e.holding as u8 as f64;
             o[15] = e.chimes as f64;
+            o[16] = e.beetles;
+            o[17] = e.jar_salt;
+            o[18] = e.jar_sugar;
+        }
+        // The plant block.
+        let p = &self.plant;
+        let o = &mut out[PLANT..PLANT + P_LEN];
+        for z in 0..ZONES {
+            o[P_O2 + z] = p.air[z].o2;
+            o[P_CO2 + z] = p.air[z].co2;
+        }
+        o[P_WATER] = p.water_l;
+        o[P_H2] = p.h2_mol;
+        o[P_MUSH] = p.mush_kg;
+        o[P_PASTE] = p.paste_l;
+        o[P_PB] = p.pb_l;
+        o[P_PB_SALT] = p.pb_salt;
+        o[P_PB_SUGAR] = p.pb_sugar;
+        o[P_SALT] = p.salt_kg;
+        o[P_SUGAR] = p.sugar_kg;
+        o[P_SYNTH] = p.synth_rate;
+        o[P_SEP] = p.sep_rate;
+        o[P_MIX] = p.mix_rate;
+        o[P_PB_FLOWING] = p.pb_flowing as u8 as f64;
+        for k in 0..2 {
+            let f = &p.farms[k];
+            let b = P_FARM + k * 4;
+            o[b] = f.growth;
+            o[b + 1] = f.cats;
+            o[b + 2] = f.soil;
+            o[b + 3] = f.harvests as f64;
         }
     }
 }
 
 // ---------- state layout shared with TypeScript (src/simLayout.ts) ----------
 pub const STATE_HEADER: usize = 6;
-pub const ROOM_STRIDE: usize = 16;
-pub const STATE_LEN: usize = STATE_HEADER + ROOMS * ROOM_STRIDE;
+pub const ROOM_STRIDE: usize = 19;
+pub const PLANT: usize = STATE_HEADER + ROOMS * ROOM_STRIDE;
+pub const P_O2: usize = 0;
+pub const P_CO2: usize = ZONES;
+pub const P_WATER: usize = 2 * ZONES;
+pub const P_H2: usize = P_WATER + 1;
+pub const P_MUSH: usize = P_WATER + 2;
+pub const P_PASTE: usize = P_WATER + 3;
+pub const P_PB: usize = P_WATER + 4;
+pub const P_PB_SALT: usize = P_WATER + 5;
+pub const P_PB_SUGAR: usize = P_WATER + 6;
+pub const P_SALT: usize = P_WATER + 7;
+pub const P_SUGAR: usize = P_WATER + 8;
+pub const P_SYNTH: usize = P_WATER + 9;
+pub const P_SEP: usize = P_WATER + 10;
+pub const P_MIX: usize = P_WATER + 11;
+pub const P_PB_FLOWING: usize = P_WATER + 12;
+pub const P_FARM: usize = P_WATER + 13; // 2 farms × [growth, caterpillars, soil, harvests]
+pub const P_LEN: usize = P_FARM + 8;
+pub const STATE_LEN: usize = PLANT + P_LEN;
 
 pub struct World {
     sectors: Vec<Sector>,
@@ -627,6 +955,83 @@ mod tests {
         run(&mut c, 3.0);
         report("no chiller fans", &c);
         assert!(c.chiller_power <= CHILL_MAX * 0.3 + 1.0);
+    }
+
+    fn worst_deviation(s: &mut Sector, hours: f64) -> f64 {
+        let mut m: f64 = 0.0;
+        for _ in 0..(hours * 3600.0) as usize {
+            s.step(1.0);
+            for r in &s.rooms {
+                m = m.max((r.temp - 22.0).abs());
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn without_salt_the_beetles_leave_and_the_engines_hunt() {
+        let mut s = settled();
+        // A disturbance: room 2's rack switched off for an hour, then back on.
+        let bump = |s: &mut Sector| {
+            s.command(20, 2, (1 | 0 << 1 | 8 << 2 | 3 << 6) as f64);
+            run(s, 1.0);
+            s.command(20, 2, (1 | 1 << 1 | 8 << 2 | 3 << 6) as f64);
+        };
+        let mut calm = s.clone();
+        bump(&mut calm);
+        run(&mut calm, 6.0);
+        let steady = worst_deviation(&mut calm, 12.0);
+        // No salt anywhere: in the silo, the tank or the jars.
+        s.plant.salt_kg = 0.0;
+        s.plant.pb_salt = 0.0;
+        for e in &mut s.engines {
+            e.jar_salt = 0.0;
+        }
+        run(&mut s, 12.0);
+        bump(&mut s);
+        run(&mut s, 6.0);
+        let hunting = worst_deviation(&mut s, 12.0);
+        eprintln!("worst deviation with beetles {steady:.2} °C, after they left {hunting:.2} °C");
+        assert!(s.engines.iter().all(|e| e.beetles < 0.01));
+        assert!(steady < 0.5);
+        assert!(hunting > 2.0);
+    }
+
+    #[test]
+    fn the_peanut_butter_chain_keeps_the_jars_full() {
+        let mut s = settled();
+        run(&mut s, 36.0);
+        let p = &s.plant;
+        eprintln!(
+            "after 48 h: harvests {} {}, mush {:.0} kg, paste {:.1} L, PB {:.1} L (salt {:.3}, sugar {:.3}), water {:.0} L",
+            p.farms[0].harvests, p.farms[1].harvests, p.mush_kg, p.paste_l, p.pb_l, p.pb_salt, p.pb_sugar, p.water_l
+        );
+        assert!(p.farms[0].harvests >= 1 && p.farms[1].harvests >= 1);
+        assert!(p.pb_l > 0.0, "PB tank never runs dry");
+        assert!(s.engines.iter().all(|e| e.pb_fill > 0.9 && e.beetles > 0.9));
+    }
+
+    #[test]
+    fn a_broken_separator_starves_everything_downstream() {
+        let mut s = settled();
+        s.command(30, M_SEPARATOR, 2.0); // switched on, not working
+        s.command(24, 0, 3.0);
+        run(&mut s, 60.0);
+        eprintln!("PB {:.1} L, mush {:.0} kg, jar fills {:.2} {:.2} {:.2}", s.plant.pb_l, s.plant.mush_kg, s.engines[0].pb_fill, s.engines[1].pb_fill, s.engines[2].pb_fill);
+        assert!(s.plant.mush_kg > 100.0, "ground-up rooms pile up");
+        assert_eq!(s.plant.pb_l, 0.0);
+        assert!(s.engines.iter().all(|e| e.pb_fill < 0.5), "beetles eat the jars down");
+    }
+
+    #[test]
+    fn the_water_room_breathes_its_own_oxygen() {
+        let mut s = settled();
+        let o2 = s.plant.air[Z_WATER].o2;
+        eprintln!("water room O2 {:.3}, corridor {:.3}", o2, s.plant.air[Z_CORRIDOR].o2);
+        assert!(o2 < 0.19 && o2 > 0.13);
+        s.command(30, M_SYNTH, 0.0);
+        run(&mut s, 3.0);
+        assert!(s.plant.air[Z_WATER].o2 > 0.2, "air recovers through the door");
     }
 
     #[test]

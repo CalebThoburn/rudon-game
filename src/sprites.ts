@@ -106,6 +106,38 @@ export function wreckTexture(): THREE.CanvasTexture {
   return texture(c);
 }
 
+// ---------------- caterpillar farms ----------------
+export function peanutPlantTexture(ripe: boolean): THREE.CanvasTexture {
+  const [c, g] = canvas(128, 128);
+  g.strokeStyle = INK; g.lineWidth = 3;
+  for (const [dx, h] of [[-26, 70], [0, 92], [24, 76], [-10, 60], [14, 64]]) {
+    g.beginPath(); g.moveTo(64, 124); g.quadraticCurveTo(64 + dx * 0.4, 124 - h * 0.5, 64 + dx, 124 - h); g.stroke();
+    g.beginPath(); g.ellipse(64 + dx, 124 - h, 14, 9, dx * 0.02, 0, Math.PI * 2); inked(g, '#5d8a3a', 3);
+  }
+  if (ripe) for (const [x, y] of [[48, 116], [60, 120], [74, 117], [84, 121], [54, 122]]) {
+    g.beginPath(); g.ellipse(x, y, 7, 4, 0.3, 0, Math.PI * 2); inked(g, '#c9a46a', 2);
+  }
+  return texture(c);
+}
+
+export function caterpillarTexture(): THREE.CanvasTexture {
+  const [c, g] = canvas(96, 48);
+  for (let k = 0; k < 6; k++) { g.beginPath(); g.arc(14 + k * 12, 30 - Math.sin(k) * 3, 9, 0, Math.PI * 2); inked(g, k === 5 ? '#7ab34a' : '#9acd5a', 2.5); }
+  g.fillStyle = INK; g.beginPath(); g.arc(78, 26, 2, 0, Math.PI * 2); g.fill();
+  return texture(c);
+}
+
+export function soilTexture(): THREE.CanvasTexture {
+  const [c, g] = canvas(128, 128);
+  g.fillStyle = '#7a5a3a'; g.fillRect(0, 0, 128, 128);
+  for (let k = 0; k < 700; k++) { g.fillStyle = Math.random() < 0.5 ? '#6a4c30' : '#8a6a48'; g.fillRect(Math.random() * 128, Math.random() * 128, 3, 2); }
+  g.strokeStyle = '#5a3e26'; g.lineWidth = 3;
+  for (let y = 16; y < 128; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(128, y); g.stroke(); }
+  const t = texture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
 // ---------------- surfaces ----------------
 export function carpetTexture(): THREE.CanvasTexture {
   const [c, g] = canvas(128, 128);

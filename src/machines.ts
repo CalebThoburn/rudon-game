@@ -1,10 +1,11 @@
 // How each assembly looks and what you can do to it. The art draws whatever
 // parts are actually present (it never assumes), so the same drawing serves as
 // the inspect panel and as the machine's front in the world.
-import { CHILLER, ENGINE as EN, PUMP, RACK, works } from './assemblies';
+import { CHILLER, ENGINE as EN, PUMP, RACK, SEPARATOR_DRIVE, SEPARATOR_PROCESS, works } from './assemblies';
 import { leverPos, PW, PH, type Ctx, type PanelDef } from './inspect';
 import { drawItem, type Item } from './items';
-import { Cmd, H, R, ROOMS, room } from './simLayout';
+import { letter } from './letters';
+import { Cmd, H, P, R, ROOMS, Z, plant, room } from './simLayout';
 import { tempColor } from './sprites';
 
 const INK = '#2a2118';
@@ -107,14 +108,25 @@ export const engineDef: PanelDef = {
     if (!onSite(c)) return;
     if (slot === 'jar') {
       const butter = item.parts?.butter?.item;
-      if (butter) butter.fill = room(c.state, c.room, R.pbFill);
+      if (butter) {
+        butter.fill = room(c.state, c.room, R.pbFill);
+        butter.salt = room(c.state, c.room, R.jarSalt);
+        butter.sugar = room(c.state, c.room, R.jarSugar);
+      }
     }
     if (slot === 'valve') item.open = room(c.state, c.room, R.valve);
+    if (slot === 'vivarium') item.colony = room(c.state, c.room, R.beetles);
   },
   onInstall(c, slot, item) {
     if (!onSite(c)) return;
-    if (slot === 'jar') c.send(Cmd.JarFill, c.room, item.parts?.butter?.item?.fill ?? 0);
+    if (slot === 'jar') {
+      const butter = item.parts?.butter?.item;
+      c.send(Cmd.JarFill, c.room, butter?.fill ?? 0);
+      c.send(Cmd.JarSalt, c.room, butter?.salt ?? 0);
+      c.send(Cmd.JarSugar, c.room, butter?.sugar ?? 0);
+    }
     if (slot === 'valve') c.send(Cmd.ValveSet, c.room, item.open ?? 0.3);
+    if (slot === 'vivarium') c.send(Cmd.Colony, c.room, item.colony ?? 0);
   },
   controls: [
     {
@@ -216,6 +228,9 @@ export const engineDef: PanelDef = {
     if (has('screw')) leadScrew(g, v.screw ?? 0, valve, has('pin')); else socket(g, EN.SCREW.x, 260, 30);
     if (!has('pin')) { g.fillStyle = INK; g.beginPath(); g.arc(EN.PIN.x, EN.PIN.y, 5, 0, Math.PI * 2); g.fill(); }
     if (has('valve')) valveBody(g, valve); else socket(g, EN.VALVE.x, EN.VALVE.y + 14, 32);
+    const viv = c.item('vivarium');
+    if (viv) vivarium(g, c, onSite(c) ? sim(c, R.beetles) : viv.colony ?? 0, sim(c, R.temp, 22));
+    else socket(g, EN.VIV.x, EN.VIV.y, 46);
     // bell
     const swing = Math.sin(v.bell * 24) * v.bell * 0.5;
     g.save(); g.translate(EN.BELL.x, EN.BELL.y - 30); g.rotate(swing);
@@ -243,6 +258,29 @@ export const engineDef: PanelDef = {
     g.beginPath(); g.moveTo(370, 400); g.lineTo(430, 400); g.moveTo(400, 400); g.lineTo(400, 440); g.stroke();
   },
 };
+
+/** The beetle vivarium: the colony crowds toward the warm side as the room heats. */
+function vivarium(g: CanvasRenderingContext2D, c: Ctx, colony: number, roomT: number): void {
+  const { x, y } = EN.VIV;
+  c.vis.bt = (c.vis.bt ?? 0) + c.dt;
+  g.beginPath(); g.roundRect(x - 55, y - 40, 110, 80, 8); g.fillStyle = '#cfe3e033'; g.fill();
+  // lever arm under it, tipped by the colony's weight
+  const tip = Math.max(-0.25, Math.min(0.25, (roomT - 22) * 0.1 * colony));
+  g.save(); g.translate(x, y + 48); g.rotate(tip);
+  g.strokeStyle = INK; g.lineWidth = 6; g.beginPath(); g.moveTo(-60, 0); g.lineTo(60, 0); g.stroke();
+  g.strokeStyle = '#b8893a'; g.lineWidth = 3; g.stroke();
+  g.restore();
+  const n = Math.round(colony * 24);
+  const lean = Math.max(-1, Math.min(1, (roomT - 22) / 3));
+  g.fillStyle = '#1a1208';
+  for (let k = 0; k < n; k++) {
+    const h = (k * 97) % 100 / 100;
+    const bx = x + (h - 0.5) * 80 * (1 - Math.abs(lean) * 0.6) + lean * 30 + Math.sin(c.vis.bt * 3 + k) * 3;
+    const by = y - 25 + ((k * 61) % 100) / 100 * 50 + Math.cos(c.vis.bt * 2.3 + k) * 2;
+    g.beginPath(); g.ellipse(bx, by, 4, 2.8, k + c.vis.bt, 0, Math.PI * 2); g.fill();
+  }
+  g.beginPath(); g.roundRect(x - 55, y - 40, 110, 80, 8); g.strokeStyle = INK; g.lineWidth = 3; g.stroke();
+}
 
 function ledgerDrum(g: CanvasRenderingContext2D, a: number, holding: boolean): void {
   gear(g, EN.LEDGER.x, EN.LEDGER.y, EN.LEDGER.r, 36, a, '#d9ad55');
@@ -408,7 +446,11 @@ export const rackDef: PanelDef = {
 const V = PUMP.VOL;
 const PUMP_LEVER = { x: 150, top: 420, bottom: 500 };
 
-export const pumpDef: PanelDef = {
+export const pumpDef: PanelDef = makePump('coolant');
+export const pbPumpDef: PanelDef = makePump('pb');
+
+function makePump(fluid: 'coolant' | 'pb'): PanelDef {
+  return {
   front: { rect: [70, 130, 620, 400], size: [1.6, 1.03] },
   sync: noSync,
   controls: [
@@ -421,11 +463,11 @@ export const pumpDef: PanelDef = {
     const st = c.state;
     const motor = c.item('motor');
     const spinning = !!c.switches.power && works(motor);
-    const flow = c.room >= 0 ? totalFlow(st) : 0;
+    const flow = c.room < 0 ? 0 : fluid === 'coolant' ? totalFlow(st) : plant(st, P.pbFlowing) * 0.0003;
     c.vis.spin = (c.vis.spin ?? 0) + (spinning ? 1 : 0) * c.dt * 9;
     c.vis.flow = (c.vis.flow ?? 0) + flow * 1000 * 120 * c.dt;
     background(g, c, '#2e2a24', '#16130e');
-    const water = tempColor(st[H.coolantTemp]).getStyle();
+    const water = fluid === 'coolant' ? tempColor(st[H.coolantTemp]).getStyle() : '#a8732f';
     if (c.room >= 0) {
       pipe(g, [[V.x, PH - 30], [V.x, V.y]], water, 40);
       pipe(g, [[V.x + 90, V.y - 90], [V.x + 90, 140]], water, 40);
@@ -468,7 +510,8 @@ export const pumpDef: PanelDef = {
   drawExterior(g, c) {
     lever(g, c, 'power', PUMP_LEVER.x, PUMP_LEVER.top, PUMP_LEVER.bottom);
   },
-};
+  };
+}
 
 // ======================================================================
 // Chiller
@@ -570,6 +613,7 @@ export function benchDef(): PanelDef {
       for (let x = 50; x < PW - 30; x += 40) { g.beginPath(); g.moveTo(x, 30); g.lineTo(x, PH - 30); g.stroke(); }
       for (let y = 50; y < PH - 30; y += 40) { g.beginPath(); g.moveTo(30, y); g.lineTo(PW - 30, y); g.stroke(); }
       const asm = c.inst.asm;
+      if (c.inst.item.type === 'letter') return drawLetter(g, c.inst.item.seed ?? 1);
       if (!asm.slots.length) {
         drawItem(g, c.inst.item, PW / 2, PH / 2, 300);
         return;
@@ -601,3 +645,288 @@ export function benchDef(): PanelDef {
     },
   };
 }
+
+function drawLetter(g: CanvasRenderingContext2D, seed: number): void {
+  const L = letter(seed);
+  g.save();
+  g.translate(PW / 2, PH / 2);
+  g.rotate(-0.02);
+  g.fillStyle = '#00000044'; g.fillRect(-196, -236, 400, 480);
+  g.fillStyle = L.future ? '#f4efe0' : '#e9dfc4'; g.fillRect(-200, -240, 400, 480);
+  g.strokeStyle = '#c9bd9f'; g.lineWidth = 1;
+  for (let y = -170; y < 220; y += 30) { g.beginPath(); g.moveTo(-170, y); g.lineTo(170, y); g.stroke(); }
+  g.fillStyle = '#2a3550';
+  g.font = 'italic 17px Georgia, serif';
+  g.textAlign = 'right';
+  g.fillText(L.date, 170, -200);
+  g.textAlign = 'left';
+  g.font = 'italic 19px Georgia, serif';
+  L.lines.forEach((line, k) => g.fillText(line, -170, -136 + k * 30, 340));
+  // the company mark, stamped
+  g.strokeStyle = '#a33b2c99'; g.lineWidth = 6;
+  g.beginPath(); g.moveTo(110, 170); g.lineTo(170, 170); g.moveTo(140, 170); g.lineTo(140, 210); g.stroke();
+  g.restore();
+}
+
+// ======================================================================
+// Schematic machines: the newer plant. A chassis, the actual parts where they
+// sit, and the connections between them (drawn only when both ends exist).
+// ======================================================================
+interface Link { a: string; b: string; style: 'pipe' | 'belt' | 'shaft' | 'duct'; color?: string }
+interface Schematic {
+  front: PanelDef['front'];
+  body: [number, number, number, number];
+  color: string;
+  links?: Link[];
+  spin?: string[];
+  lever?: { x: number; top: number; bottom: number };
+  running(c: Ctx): boolean;
+  extra?(g: CanvasRenderingContext2D, c: Ctx, running: boolean): void;
+  under?(g: CanvasRenderingContext2D, c: Ctx): void;
+}
+
+function schematic(spec: Schematic): PanelDef {
+  const controls: PanelDef['controls'] = spec.lever
+    ? [{
+        id: 'power', kind: 'lever', r: 50,
+        pos: () => [spec.lever!.x, (spec.lever!.top + spec.lever!.bottom) / 2],
+        track: { top: spec.lever.top, bottom: spec.lever.bottom },
+      }]
+    : [];
+  return {
+    front: spec.front,
+    sync: noSync,
+    controls,
+    drawInterior(g, c) {
+      const running = spec.running(c);
+      c.vis.spin = (c.vis.spin ?? 0) + (running ? 1 : 0) * c.dt * 6;
+      background(g, c, '#2c2a26', '#16140f');
+      const [bx, by, bw, bh] = spec.body;
+      g.beginPath(); g.roundRect(bx, by, bw, bh, 14); inked(g, spec.color, 5);
+      g.beginPath(); g.roundRect(bx + 12, by + 12, bw - 24, bh - 24, 8); g.fillStyle = '#00000040'; g.fill();
+      spec.under?.(g, c);
+      const slots = c.inst.asm.slots;
+      const at = (id: string) => slots.find((s) => s.id === id)!;
+      for (const l of spec.links ?? []) {
+        const A = at(l.a), B = at(l.b);
+        const both = c.has(l.a) && c.has(l.b);
+        const pts: [number, number][] = [[A.x, A.y], [B.x, B.y]];
+        if (l.style === 'pipe' || l.style === 'duct') {
+          if (both) pipe(g, pts, l.color ?? '#7a8c96', l.style === 'duct' ? 22 : 12);
+          else { g.save(); g.setLineDash([6, 8]); g.strokeStyle = '#ffffff22'; g.lineWidth = 3; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); g.stroke(); g.restore(); }
+        } else if (both) {
+          g.strokeStyle = INK; g.lineWidth = l.style === 'belt' ? 9 : 7; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); g.stroke();
+          g.strokeStyle = l.style === 'belt' ? '#3a3a3a' : '#8c8c8c'; g.lineWidth = l.style === 'belt' ? 5 : 3; g.stroke();
+          if (l.style === 'belt' && running) {
+            g.save(); g.setLineDash([4, 10]); g.lineDashOffset = -c.vis.spin * 20; g.strokeStyle = '#9a9a9a'; g.lineWidth = 2;
+            g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y); g.stroke(); g.restore();
+          }
+        }
+      }
+      for (const s of slots) {
+        if (s.kind === 'plate' || s.locks) continue;
+        const content = c.slots[s.id];
+        if (!content?.item) { socket(g, s.x, s.y, s.r * 0.9); continue; }
+        g.save();
+        g.translate(s.x, s.y);
+        if (s.fix && !content.fixed) g.rotate(0.35); // loose: sitting there, not connected
+        else if (running && spec.spin?.includes(s.id)) g.rotate(c.vis.spin * (s.r > 50 ? 0.5 : 1.5));
+        drawItem(g, content.item, 0, 0, s.r * 1.8);
+        g.restore();
+        if (s.fix && content.fixed && s.r >= 30) {
+          g.fillStyle = '#c9c9c9';
+          for (const a of [0.8, 2.4, 3.9, 5.5]) { g.beginPath(); g.arc(s.x + Math.cos(a) * s.r * 0.95, s.y + Math.sin(a) * s.r * 0.95, 3, 0, Math.PI * 2); g.fill(); }
+        }
+      }
+      spec.extra?.(g, c, running);
+    },
+    drawPlate(g, c, plateId) {
+      const s = c.inst.asm.slots.find((x) => x.id === plateId)!;
+      const [x, y, w, h] = s.rect!;
+      g.beginPath(); g.roundRect(x, y, w, h, 10); inked(g, '#8e9aa3', 4);
+      g.strokeStyle = '#6d7880'; g.lineWidth = 3;
+      for (let yy = y + 24; yy < y + h - 16; yy += 16) { g.beginPath(); g.moveTo(x + 30, yy); g.lineTo(x + w - 30, yy); g.stroke(); }
+    },
+    drawExterior: spec.lever ? (g, c) => lever(g, c, 'power', spec.lever!.x, spec.lever!.top, spec.lever!.bottom) : undefined,
+  };
+}
+
+const powered = (c: Ctx) => onSite(c) && !!c.switches.power && works(c.inst.item);
+
+/** A vertical tank showing how full it is. */
+function tankLevel(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, frac: number, color: string): void {
+  g.beginPath(); g.roundRect(x, y, w, h, 30); inked(g, '#c9cfd4', 4);
+  const f = Math.max(0, Math.min(1, frac));
+  g.save(); g.beginPath(); g.roundRect(x + 8, y + 8, w - 16, h - 16, 24); g.clip();
+  g.fillStyle = color; g.fillRect(x, y + h - 8 - (h - 16) * f, w, (h - 16) * f + 8);
+  g.restore();
+}
+
+function gauge(g: CanvasRenderingContext2D, x: number, y: number, frac: number): void {
+  g.beginPath(); g.arc(x, y, 26, 0, Math.PI * 2); inked(g, '#f1ead6');
+  const a = Math.PI * (0.75 + 1.5 * Math.max(0, Math.min(1, frac)));
+  g.strokeStyle = '#a33'; g.lineWidth = 3; g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * 20, y + Math.sin(a) * 20); g.stroke();
+}
+
+export const synthDef = schematic({
+  front: { rect: [60, 40, 700, 480], size: [1.9, 1.3] },
+  body: [60, 40, 680, 480], color: '#7a8c96',
+  links: [
+    { a: 'intake', b: 'burner', style: 'duct', color: '#9aa3a8' },
+    { a: 'h2valve', b: 'burner', style: 'pipe', color: '#e8e8e8' },
+    { a: 'burner', b: 'condenser', style: 'pipe', color: '#c0602a' },
+    { a: 'condenser', b: 'trap', style: 'pipe', color: '#7fb3d9' },
+  ],
+  spin: ['intake'],
+  lever: { x: 380, top: 420, bottom: 500 },
+  running: (c) => onSite(c) && plant(c.state, P.synth) > 0,
+  extra(g, c, running) {
+    // intake gauge: how much oxygen is in the room's air
+    gauge(g, 140, 90, onSite(c) ? (plant(c.state, P.o2 + Z.water) - 0.1) / 0.11 : 0);
+    if (running) {
+      c.vis.drip = ((c.vis.drip ?? 0) + c.dt * 1.5) % 1;
+      g.fillStyle = '#9fd3ff'; g.beginPath(); g.ellipse(670, 495 + c.vis.drip * 20, 4, 6, 0, 0, Math.PI * 2); g.fill();
+      if (c.has('burner')) { g.fillStyle = '#ffb35a88'; g.beginPath(); g.arc(450, 260, 30 + Math.sin(c.vis.spin * 4) * 4, 0, Math.PI * 2); g.fill(); }
+    }
+  },
+});
+
+export const h2TankDef = schematic({
+  front: { rect: [240, 30, 320, 510], size: [0.9, 1.45] },
+  body: [250, 40, 300, 490], color: '#8d959b',
+  running: () => false,
+  under(g, c) {
+    tankLevel(g, 290, 170, 220, 320, onSite(c) ? plant(c.state, P.h2) / 200000 : 0.5, '#d8e4ec');
+    gauge(g, 400, 240, onSite(c) ? plant(c.state, P.h2) / 200000 : 0.5);
+  },
+});
+
+export const waterTankDef = schematic({
+  front: { rect: [240, 30, 320, 510], size: [1.0, 1.6] },
+  body: [250, 40, 300, 490], color: '#5d8fb8',
+  running: () => false,
+  under(g, c) { tankLevel(g, 290, 70, 220, 360, onSite(c) ? plant(c.state, P.water) / 2000 : 0, '#5fa8e0'); },
+});
+
+export const irrigatorDef = schematic({
+  front: { rect: [110, 110, 580, 300], size: [1.2, 0.62] },
+  body: [120, 150, 560, 230], color: '#4d7a4a',
+  links: [{ a: 'valve', b: 'spr0', style: 'pipe', color: '#7fb3d9' }, { a: 'spr0', b: 'spr1', style: 'pipe', color: '#7fb3d9' }],
+  lever: { x: 330, top: 290, bottom: 360 },
+  running: powered,
+  extra(g, c, running) {
+    if (!running) return;
+    c.vis.drip = ((c.vis.drip ?? 0) + c.dt * 2) % 1;
+    g.fillStyle = '#9fd3ff';
+    for (const x of [450, 610]) for (let k = 0; k < 5; k++) { g.beginPath(); g.arc(x - 30 + k * 15, 245 + ((c.vis.drip + k * 0.2) % 1) * 60, 3, 0, Math.PI * 2); g.fill(); }
+  },
+});
+
+export const grinderDef = schematic({
+  front: { rect: [40, 20, 720, 520], size: [1.6, 1.15] },
+  body: [50, 30, 700, 500], color: '#6b5a3a',
+  links: [
+    { a: 'motor', b: 'gearbox', style: 'shaft' },
+    { a: 'hopper', b: 'auger', style: 'duct', color: '#5a4a2a' },
+  ],
+  spin: ['blade0', 'blade1', 'blade2', 'blade3', 'auger'],
+  lever: { x: 650, top: 420, bottom: 500 },
+  running: powered,
+  extra(g, c) {
+    // how ripe the room is (the hopper's window)
+    const farm = c.room === 5 ? 0 : 1; // grinder A is plant machine 5
+    const growth = onSite(c) ? plant(c.state, P.farm + farm * 4) : 0;
+    g.fillStyle = '#5d8a3a'; g.fillRect(352, 110, 96 * growth, 10);
+    g.strokeStyle = INK; g.lineWidth = 2; g.strokeRect(352, 110, 96, 10);
+  },
+});
+
+export const separatorDef = schematic({
+  front: { rect: [30, 40, 740, 500], size: [2.6, 1.75] },
+  body: [40, 50, 720, 480], color: '#5f6b70',
+  links: [
+    ...SEPARATOR_PROCESS.slice(1).map((b, k): Link => ({ a: SEPARATOR_PROCESS[k], b, style: 'pipe', color: '#8a6a3a' })),
+    ...SEPARATOR_DRIVE.slice(1).map((b, k): Link => ({ a: SEPARATOR_DRIVE[k], b, style: 'belt' })),
+    { a: 'pulley3', b: 'belt', style: 'belt' },
+  ],
+  spin: ['crush0', 'crush1', 'magnet', 'blower', 'cyclone', 'pulley0', 'pulley1', 'pulley2', 'pulley3', 'gearbox'],
+  lever: { x: 720, top: 400, bottom: 480 },
+  running: (c) => onSite(c) && plant(c.state, P.sep) > 0,
+  extra(g, c) {
+    // mush waiting at the inlet, paste leaving at the press
+    const mush = onSite(c) ? plant(c.state, P.mush) : 0;
+    g.fillStyle = '#5a4a2a'; g.beginPath(); g.ellipse(60, 60, 20 + Math.min(40, mush / 10), 12, 0, 0, Math.PI * 2); g.fill();
+    const paste = onSite(c) ? plant(c.state, P.paste) : 0;
+    g.fillStyle = '#a8732f'; g.beginPath(); g.ellipse(160, 370, 10 + Math.min(30, paste / 5), 8, 0, 0, Math.PI * 2); g.fill();
+  },
+});
+
+export const mixerDef = schematic({
+  front: { rect: [50, 30, 700, 500], size: [1.7, 1.2] },
+  body: [60, 40, 680, 480], color: '#8a6a3a',
+  links: [
+    { a: 'motor', b: 'paddle', style: 'shaft' },
+    { a: 'paddle', b: 'vat', style: 'shaft' },
+    { a: 'salt', b: 'vat', style: 'pipe', color: '#f1f1f1' },
+    { a: 'sugar', b: 'vat', style: 'pipe', color: '#d9c39a' },
+    { a: 'valve', b: 'vat', style: 'pipe', color: '#a8732f' },
+  ],
+  spin: ['paddle'],
+  lever: { x: 680, top: 430, bottom: 500 },
+  running: (c) => onSite(c) && plant(c.state, P.mix) > 0,
+  extra(g, c, running) {
+    if (!c.has('vat')) return;
+    const pb = onSite(c) ? plant(c.state, P.pb) / 400 : 0;
+    g.fillStyle = '#a8732f'; g.beginPath(); g.ellipse(400, 400, 80, 18 + 30 * pb, 0, 0, Math.PI * 2); g.fill();
+    if (running) { g.strokeStyle = '#c08a45'; g.lineWidth = 3; g.beginPath(); g.ellipse(400, 395, 50, 10, c.vis.spin, 0, Math.PI * 1.5); g.stroke(); }
+  },
+});
+
+function siloDef(stock: number, max: number, color: string): PanelDef {
+  return schematic({
+    front: { rect: [240, 20, 320, 520], size: [1.0, 1.6] },
+    body: [250, 30, 300, 500], color: '#9aa3a8',
+    running: () => false,
+    under(g, c) {
+      const frac = onSite(c) ? plant(c.state, stock) / max : 0.5;
+      tankLevel(g, 280, 130, 240, 300, frac, color);
+      g.fillStyle = '#ffffff66';
+      for (let k = 0; k < 30 * frac; k++) g.fillRect(300 + ((k * 37) % 200), 420 - ((k * 53) % Math.max(1, 280 * frac)), 3, 3);
+    },
+  });
+}
+export const saltSiloDef = siloDef(P.salt, 40, '#f1f1f1');
+export const sugarSiloDef = siloDef(P.sugar, 150, '#d9c39a');
+
+export const cafeDef = schematic({
+  front: { rect: [170, 90, 460, 280], size: [1.8, 1.1] },
+  body: [180, 120, 440, 230], color: '#b0a48a',
+  links: [],
+  running: powered,
+  under(g) {
+    g.fillStyle = '#d8d0b8'; g.fillRect(200, 290, 400, 40);
+    for (let k = 0; k < 4; k++) { g.beginPath(); g.roundRect(215 + k * 95, 296, 80, 26, 4); inked(g, '#e8e0cc', 2); }
+  },
+});
+
+export const cabinetDef: PanelDef = {
+  front: { rect: [240, 30, 320, 500], size: [0.8, 1.25] },
+  sync: noSync,
+  controls: [],
+  drawInterior(g, c) {
+    background(g, c, '#2c2a26', '#16140f');
+    g.beginPath(); g.roundRect(250, 40, 300, 480, 8); inked(g, '#7d8a7a', 5);
+    for (let k = 0; k < 4; k++) {
+      const y = 110 + k * 112;
+      const d = c.item(`drawer${k}`);
+      if (!d) { g.fillStyle = '#141414'; g.fillRect(266, y - 48, 268, 96); continue; }
+      g.beginPath(); g.roundRect(266, y - 48, 268, 96, 4); inked(g, '#8d9a8a', 3);
+      g.beginPath(); g.roundRect(370, y - 8, 60, 16, 6); inked(g, '#c9c9c9', 2);
+      g.beginPath(); g.rect(380, y - 34, 40, 16); inked(g, '#f1ead6', 2); // the label holder (blank)
+      const n = Object.values(d.parts ?? {}).filter((x) => x.item).length;
+      g.fillStyle = '#f1ead6';
+      for (let j = 0; j < n; j++) g.fillRect(280 + j * 10, y - 46, 7, 5);
+    }
+  },
+  drawPlate() {},
+};

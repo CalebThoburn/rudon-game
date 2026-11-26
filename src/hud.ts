@@ -1,7 +1,9 @@
 // Developer overlay. The game itself has no labels or numbers; this panel is
 // for us, to see the simulation and benchmark it.
 import type { SimClient } from './simClient';
-import { E, F, H, R, ROOMS, room } from './simLayout';
+import { E, F, H, P, R, ROOMS, Z, plant, room } from './simLayout';
+
+const ZONE_NAMES = ['corridor', 'server 0', 'server 1', 'server 2', 'processing', 'records', 'water', 'farm A', 'farm B', 'mixing', 'cafeteria'];
 
 const SECTOR_PRESETS = [1, 1_000, 10_000, 100_000, 300_000];
 const TIME_PRESETS = [1, 10, 30, 120, 600];
@@ -13,7 +15,7 @@ export class Hud {
   private buttons: HTMLElement;
   private fps = 60;
 
-  constructor(el: HTMLElement, private sim: SimClient) {
+  constructor(el: HTMLElement, private sim: SimClient, private zone: () => number) {
     this.el = el;
     el.innerHTML = '<h3>RUDON · PROTOTYPE 01 · DEBUG</h3>';
     this.buttons = document.createElement('div');
@@ -68,16 +70,27 @@ export class Hud {
       lines.push('');
       lines.push(`game time ${hh}h${String(mm).padStart(2, '0')}   pump ${flags & F.pumpRunning ? 'running' : 'STOPPED'}   chiller ${flags & F.chillerRunning ? 'running' : 'STOPPED'}   fans ${st[H.fans]}`);
       lines.push(`coolant ${st[H.coolantTemp].toFixed(2)} °C   chiller ${(st[H.chillerPower] / 1000).toFixed(1)} kW   head ${(st[H.pumpHead] / 1000).toFixed(1)} kPa`);
-      lines.push('room  temp   load kW  valve  flow L/s  jar   drum   engine');
+      lines.push('room  temp   load kW  valve  flow L/s  jar   beetles  engine');
       for (let i = 0; i < ROOMS; i++) {
         const f = (k: number) => room(st, i, k);
         const parts = f(R.parts);
         const missing = Object.entries(E).filter(([, bit]) => !(parts & bit)).map(([n]) => n);
         lines.push(
-          `${i}    ${f(R.temp).toFixed(2).padStart(5)}  ${(f(R.load) / 1000).toFixed(1).padStart(5)}    ${f(R.valve).toFixed(2)}   ${(f(R.flow) * 1000).toFixed(3)}    ${(f(R.pbFill) * 100).toFixed(0).padStart(3)}%  ${f(R.ledgerOmega).toFixed(2).padStart(5)}  ` +
+          `${i}    ${f(R.temp).toFixed(2).padStart(5)}  ${(f(R.load) / 1000).toFixed(1).padStart(5)}    ${f(R.valve).toFixed(2)}   ${(f(R.flow) * 1000).toFixed(3)}    ${(f(R.pbFill) * 100).toFixed(0).padStart(3)}%  ${(f(R.beetles) * 100).toFixed(0).padStart(4)}%    ` +
             `${missing.length ? 'missing ' + missing.join(',') : 'complete'}${f(R.holding) ? ' HELD' : ''}${f(R.drain) ? ' draining' : ''}${f(R.supply) ? '' : ' no-supply'}`,
         );
       }
+      const p = (k: number) => plant(st, k);
+      const z = this.zone();
+      lines.push('');
+      lines.push(`air here (${ZONE_NAMES[z]}): O2 ${(p(P.o2 + z) * 100).toFixed(1)}%  CO2 ${(p(P.co2 + z) * 1e6).toFixed(0)} ppm   water room O2 ${(p(P.o2 + Z.water) * 100).toFixed(1)}%`);
+      lines.push(`water ${p(P.water).toFixed(0)} L (+${(p(P.synth) * 3600).toFixed(0)} L/h)   H2 ${(p(P.h2) / 1000).toFixed(0)}k mol`);
+      for (let k = 0; k < 2; k++) {
+        const b = P.farm + k * 4;
+        lines.push(`farm ${'AB'[k]}: growth ${(p(b) * 100).toFixed(0)}%  caterpillars ${p(b + 1).toFixed(0)}  soil ${(p(b + 2) * 100).toFixed(0)}%  harvests ${p(b + 3)}`);
+      }
+      lines.push(`mush ${p(P.mush).toFixed(0)} kg → paste ${p(P.paste).toFixed(1)} L → PB ${p(P.pb).toFixed(1)} L (salt ${(p(P.pbSalt) * 100).toFixed(1)}%, sugar ${(p(P.pbSugar) * 100).toFixed(1)}%)${p(P.pbFlowing) ? '' : ' NOT FLOWING'}`);
+      lines.push(`separator ${p(P.sep) > 0 ? 'running' : 'idle'}   mixer ${p(P.mix) > 0 ? 'running' : 'idle'}   salt ${p(P.salt).toFixed(1)} kg   sugar ${p(P.sugar).toFixed(0)} kg`);
     }
     this.body.innerHTML = lines.join('\n');
   }
