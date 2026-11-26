@@ -1,25 +1,32 @@
-// Mirrors the state layout in sim/src/lib.rs (`write_state`). Keep in sync.
+// Mirrors the state layout and commands in sim/src/lib.rs. Keep in sync.
 export const ROOMS = 3;
 export const STATE_HEADER = 6;
-export const ROOM_STRIDE = 19;
+export const ROOM_STRIDE = 16;
 export const STATE_LEN = STATE_HEADER + ROOMS * ROOM_STRIDE;
+export const MAX_RACKS = 16;
 
 export const H = { time: 0, coolantTemp: 1, chillerPower: 2, pumpHead: 3, flags: 4, fans: 5 } as const;
 /** Bits of state[H.flags]. */
-export const F = { pumpOn: 1, chillerOn: 2, impeller: 4, fuse: 8 } as const;
+export const F = { pumpRunning: 1, chillerRunning: 2 } as const;
 
 export const R = {
-  temp: 0, load: 1, rackOn: 2, flow: 3, heatRemoved: 4,
-  pbTemp: 5, pbFill: 6, viscosity: 7,
-  ledgerOmega: 8, ledgerAngle: 9, refAngle: 10, valve: 11,
-  linkage: 12, drain: 13, supply: 14, holding: 15, chimes: 16,
-  jarPresent: 17, blades: 18,
+  temp: 0, load: 1, flow: 2, heatRemoved: 3,
+  pbTemp: 4, pbFill: 5, viscosity: 6,
+  ledgerOmega: 7, ledgerAngle: 8, refAngle: 9, valve: 10,
+  parts: 11, drain: 12, supply: 13, holding: 14, chimes: 15,
 } as const;
 
+/** Engine part flags (Cmd.EngineParts, state R.parts). */
+export const E = { present: 1, valve: 2, actuated: 4, ledger: 8, reference: 16, jar: 32 } as const;
+
 export const Cmd = {
-  Rack: 0, Drain: 1, Supply: 2, Hold: 3, Linkage: 4, Chiller: 5, Pump: 6,
-  JarPresent: 7, JarFill: 8, Blades: 9, Impeller: 10, Fuse: 11, Fans: 12,
+  Drain: 1, Supply: 2, Hold: 3,
+  Rack: 20, EngineParts: 21, JarFill: 22, ValveSet: 23, Pump: 24, Chiller: 25, Fans: 26,
 } as const;
+
+export function rackBits(active: boolean, on: boolean, blades: number, zone: number): number {
+  return (+active) | (+on << 1) | (Math.min(15, blades) << 2) | ((zone + 1) << 6);
+}
 
 export function room(state: Float64Array, i: number, field: number): number {
   return state[STATE_HEADER + i * ROOM_STRIDE + field];

@@ -1,7 +1,7 @@
 // Developer overlay. The game itself has no labels or numbers; this panel is
 // for us, to see the simulation and benchmark it.
 import type { SimClient } from './simClient';
-import { F, H, R, ROOMS, room } from './simLayout';
+import { E, F, H, R, ROOMS, room } from './simLayout';
 
 const SECTOR_PRESETS = [1, 1_000, 10_000, 100_000, 300_000];
 const TIME_PRESETS = [1, 10, 30, 120, 600];
@@ -66,14 +66,16 @@ export class Hud {
       const hh = Math.floor(t / 3600), mm = Math.floor((t % 3600) / 60);
       const flags = st[H.flags];
       lines.push('');
-      lines.push(`game time ${hh}h${String(mm).padStart(2, '0')}   pump ${flags & F.pumpOn ? 'on' : 'OFF'}${flags & F.impeller ? '' : ' (no impeller)'}   chiller ${flags & F.chillerOn ? 'on' : 'OFF'}${flags & F.fuse ? '' : ' (no fuse)'} fans ${st[H.fans]}`);
+      lines.push(`game time ${hh}h${String(mm).padStart(2, '0')}   pump ${flags & F.pumpRunning ? 'running' : 'STOPPED'}   chiller ${flags & F.chillerRunning ? 'running' : 'STOPPED'}   fans ${st[H.fans]}`);
       lines.push(`coolant ${st[H.coolantTemp].toFixed(2)} °C   chiller ${(st[H.chillerPower] / 1000).toFixed(1)} kW   head ${(st[H.pumpHead] / 1000).toFixed(1)} kPa`);
-      lines.push('room  temp   valve  flow L/s  jar   μ Pa·s  drum');
+      lines.push('room  temp   load kW  valve  flow L/s  jar   drum   engine');
       for (let i = 0; i < ROOMS; i++) {
         const f = (k: number) => room(st, i, k);
+        const parts = f(R.parts);
+        const missing = Object.entries(E).filter(([, bit]) => !(parts & bit)).map(([n]) => n);
         lines.push(
-          `${i}    ${f(R.temp).toFixed(2).padStart(5)}  ${f(R.valve).toFixed(2)}   ${(f(R.flow) * 1000).toFixed(3)}    ${(f(R.pbFill) * 100).toFixed(0).padStart(3)}%  ${f(R.viscosity).toFixed(0).padStart(4)}    ${f(R.ledgerOmega).toFixed(3)}` +
-            ` blades ${f(R.blades)}${f(R.rackOn) ? '' : ' rack off'}${f(R.jarPresent) ? '' : ' NO JAR'}${f(R.holding) ? ' HELD' : ''}${f(R.linkage) ? '' : ' unlinked'}${f(R.drain) ? ' draining' : ''}${f(R.supply) ? '' : ' no-supply'}`,
+          `${i}    ${f(R.temp).toFixed(2).padStart(5)}  ${(f(R.load) / 1000).toFixed(1).padStart(5)}    ${f(R.valve).toFixed(2)}   ${(f(R.flow) * 1000).toFixed(3)}    ${(f(R.pbFill) * 100).toFixed(0).padStart(3)}%  ${f(R.ledgerOmega).toFixed(2).padStart(5)}  ` +
+            `${missing.length ? 'missing ' + missing.join(',') : 'complete'}${f(R.holding) ? ' HELD' : ''}${f(R.drain) ? ' draining' : ''}${f(R.supply) ? '' : ' no-supply'}`,
         );
       }
     }

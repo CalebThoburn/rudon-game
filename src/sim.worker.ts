@@ -32,6 +32,7 @@ const ctx = self as unknown as {
 };
 
 let ex: SimExports | null = null;
+const queued: ToWorker[] = []; // commands that arrive before the WASM is ready
 let world = 0;
 let sectors = 0;
 let timeScale = 30;
@@ -84,9 +85,18 @@ ctx.onmessage = async (e) => {
     reportState = m.reportState;
     timeScale = m.timeScale;
     last = performance.now();
+    for (const q of queued.splice(0)) handle(q);
     tick();
     return;
   }
+  if (!ex) {
+    queued.push(m);
+    return;
+  }
+  handle(m);
+};
+
+function handle(m: ToWorker): void {
   if (!ex) return;
   if (m.type === 'resize') {
     sectors = m.sectors;
@@ -96,4 +106,4 @@ ctx.onmessage = async (e) => {
   } else if (m.type === 'timeScale') {
     timeScale = m.value;
   }
-};
+}

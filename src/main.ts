@@ -1,14 +1,17 @@
 // Rudon, Prototype 01: one sector of Thermal Accounting.
-// A corridor, three server rooms, a pump and a chiller, and a Reconciliation
-// Engine in each room. The 3D world is drawn here; the physics runs in Rust
-// workers (see simClient.ts / sim/src/lib.rs).
+// A corridor, three server rooms, a pump and a chiller, a Reconciliation Engine
+// on each room's valve site, and the wreck of the transport you arrived in.
+// Everything is made of parts and can be taken apart, carried and rebuilt.
+// The physics runs in Rust workers (see simClient.ts / sim/src/lib.rs).
 import * as THREE from 'three';
 import { SimClient } from './simClient';
-import { R, H, ROOMS, outletTemp, room } from './simLayout';
+import { H, R, ROOMS, outletTemp, room } from './simLayout';
 import * as S from './sprites';
-import { InspectPanel, type MachineDef } from './inspect';
-import { Inventory, one } from './items';
-import { chillerDef, engineDef, pumpDef, rackDef } from './machines';
+import { InspectPanel, type Instance } from './inspect';
+import { Inventory, type Item } from './items';
+import { PLACEABLE, assemblyOf, make, without } from './assemblies';
+import { benchDef } from './machines';
+import { World, type Site, type WorldMachine } from './world';
 import { Hud } from './hud';
 import { chime } from './audio';
 
@@ -36,24 +39,20 @@ addEventListener('resize', () => {
 });
 
 const sim = new SimClient(new URL('sim.wasm', document.baseURI).href);
-const inventory = new Inventory(document.getElementById('inventory')!);
-inventory.add(one('wrench')); // a plumber never goes anywhere without one
-const inspect = new InspectPanel(
-  document.getElementById('inspect') as HTMLCanvasElement,
-  document.getElementById('ghost') as HTMLCanvasElement,
-  inventory,
-  (k, r, v) => sim.command(k, r, v),
-);
+const send = (k: number, i: number, v: number) => sim.command(k, i, v);
 const hud = new Hud(document.getElementById('hud')!, sim);
 const hint = document.getElementById('hint')!;
+const inventory = new Inventory(document.getElementById('inventory')!);
+// A plumber never goes anywhere without these.
+inventory.add(make('screwdriver'));
+inventory.add(make('wrench'));
 
 // ------------------------------------------------------------------ architecture
 const WALL_H = 1.4;
 const WALL_T = 0.25;
 interface Box { x0: number; x1: number; z0: number; z1: number }
 const colliders: Box[] = [];
-const wallTex = S.wallTexture();
-const wallMat = new THREE.MeshLambertMaterial({ map: wallTex });
+const wallMat = new THREE.MeshLambertMaterial({ map: S.wallTexture() });
 
 function wall(ax: number, az: number, bx: number, bz: number): void {
   const b = { x0: Math.min(ax, bx) - WALL_T / 2, x1: Math.max(ax, bx) + WALL_T / 2, z0: Math.min(az, bz) - WALL_T / 2, z1: Math.max(az, bz) + WALL_T / 2 };
@@ -67,7 +66,7 @@ function wall(ax: number, az: number, bx: number, bz: number): void {
   colliders.push(b);
 }
 
-function floor(x0: number, z0: number, x1: number, z1: number, mat: THREE.Material, tile = 2): THREE.Mesh {
+function floor(x0: number, z0: number, x1: number, z1: number, mat: THREE.Material, tile = 2): void {
   const geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
   const uv = geo.attributes.uv as THREE.BufferAttribute;
   for (let k = 0; k < uv.count; k++) uv.setXY(k, (uv.getX(k) * (x1 - x0)) / tile, (uv.getY(k) * (z1 - z0)) / tile);
@@ -75,10 +74,13 @@ function floor(x0: number, z0: number, x1: number, z1: number, mat: THREE.Materi
   m.rotation.x = -Math.PI / 2;
   m.position.set((x0 + x1) / 2, 0, (z0 + z1) / 2);
   scene.add(m);
-  return m;
 }
 
 const roomX = (i: number) => i * 10; // room i spans x [i*10, i*10+8], z [-11, -3]
+const zoneOf = (x: number, z: number) => {
+  for (let i = 0; i < ROOMS; i++) if (x > roomX(i) && x < roomX(i) + 8 && z > -11 && z < -3) return i;
+  return -1;
+};
 floor(-10, -3, 60, 3, new THREE.MeshLambertMaterial({ map: S.carpetTexture() }), 1.5);
 const tile = S.tileTexture();
 const roomFloorMats = Array.from({ length: ROOMS }, (_, i) => {
@@ -87,7 +89,7 @@ const roomFloorMats = Array.from({ length: ROOMS }, (_, i) => {
   return mat;
 });
 
-// The corridor runs on past the rooms into the dark. It ends, eventually.
+// The corridor runs on past the rooms into the dark. It ends, eventually, at the wreck.
 wall(-10, 3, 60, 3);
 wall(-10, -3, -10, 3);
 wall(60, -3, 60, 3);
@@ -104,28 +106,11 @@ for (let i = 0; i < ROOMS; i++) {
   wall(x0 + 5, -3, x0 + 8, -3);
 }
 
-// ------------------------------------------------------------------ machines
-type Kind = 'engine' | 'rack' | 'pump' | 'chiller';
-interface Machine { kind: Kind; room: number; obj: THREE.Group; radius: number }
-const machines: Machine[] = [];
-function place(kind: Kind, roomIdx: number, obj: THREE.Group, x: number, z: number, radius: number): void {
-  obj.position.set(x, 0, z);
-  scene.add(obj);
-  machines.push({ kind, room: roomIdx, obj, radius });
-}
-
-place('chiller', -1, S.makeSprite(S.chillerTexture(), 2.4, 2.0), -7.6, 0.6, 1.0);
-place('pump', -1, S.makeSprite(S.pumpTexture(), 1.2, 1.05), -5.0, -1.4, 0.5);
-const engineSprites: S.EngineSprite[] = [];
-const rackSprites: S.RackSprite[] = [];
-for (let i = 0; i < ROOMS; i++) {
-  const es = new S.EngineSprite();
-  engineSprites.push(es);
-  place('engine', i, S.makeSprite(es.tex, 1.6, 1.6), roomX(i) + 2, -9.3, 0.6);
-  const rs = new S.RackSprite();
-  rackSprites.push(rs);
-  place('rack', i, S.makeSprite(rs.tex, 1.0, 1.85), roomX(i) + 6, -9.7, 0.5);
-}
+// The transport you arrived in.
+const wreck = S.makeSprite(S.wreckTexture(), 5.5, 2.75);
+wreck.position.set(52, 0, -0.6);
+scene.add(wreck);
+colliders.push({ x0: 49.6, x1: 54.6, z0: -1.6, z1: 0.2 });
 
 // ------------------------------------------------------------------ pipes
 const PIPE_Y = 0.12;
@@ -147,11 +132,17 @@ function pipe(pts: [number, number][], mat: THREE.Material): THREE.Vector3[] {
   return v;
 }
 
+/** A pipe flange on the floor: where a machine connects to the building. */
+function flange(x: number, z: number): void {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.06, 16), new THREE.MeshLambertMaterial({ color: 0x8d959b }));
+  m.position.set(x, 0.03, z);
+  scene.add(m);
+}
+
 pipe([[-6.8, 0.2], [-5.0, 0.2], [-5.0, -1.0]], supplyMat);
 pipe([[-5.0, -1.8], [-5.0, -2.55], [22, -2.55]], supplyMat);
 pipe([[22.4, -2.15], [-6.8, -2.15], [-6.8, -0.2]], returnMat);
 
-// Flow markers travel each branch at a speed proportional to the real flow.
 interface Branch { path: THREE.Vector3[]; lengths: number[]; total: number; dots: THREE.Mesh[]; offset: number }
 const branches: Branch[] = [];
 const dotGeo = new THREE.SphereGeometry(0.05, 8, 6);
@@ -180,53 +171,138 @@ function along(b: Branch, s: number, out: THREE.Vector3): THREE.Vector3 {
   return out.copy(b.path[b.path.length - 1]);
 }
 
+// ------------------------------------------------------------------ machines
+const sites: Site[] = [
+  { kind: 'pump', x: -5.0, z: -1.4, room: 0, machine: null },
+  { kind: 'chiller', x: -7.6, z: 0.6, room: 0, machine: null },
+  ...Array.from({ length: ROOMS }, (_, i): Site => ({ kind: 'engine', x: roomX(i) + 2, z: -9.3, room: i, machine: null })),
+];
+sites.forEach((s) => flange(s.x, s.z + 0.45));
+
+let inspect: InspectPanel | null = null; // created below; the world asks it what's open
+const world = new World(scene, sites, send, zoneOf, (inst) => inspect?.instance === inst);
+
+const STOCK_BLADES = [4, 6, 8];
+world.place(make('pump_frame'), -5.0, -1.4);
+const chiller = world.place(without(make('chiller_frame'), 'fan1'), -7.6, 0.6); // the second fan mount came empty
+for (let i = 0; i < ROOMS; i++) {
+  world.place(make('engine_frame'), roomX(i) + 2, -9.3);
+  const rack = without(make('rack_frame'), ...Array.from({ length: 8 - STOCK_BLADES[i] }, (_, k) => `bay${7 - k}`));
+  world.place(rack, roomX(i) + 6, -9.7);
+}
+world.place(make('toolbox'), 50.2, 1.3);
+void chiller;
+
+// ------------------------------------------------------------------ inspect & bench
+const benches = new WeakMap<Item, Instance>();
+const panel = new InspectPanel(
+  document.getElementById('inspect') as HTMLCanvasElement,
+  document.getElementById('ghost') as HTMLCanvasElement,
+  inventory,
+  {
+    send,
+    changed(inst) {
+      const wm = world.find(inst);
+      if (wm) world.syncSim(wm);
+      inventory.render();
+    },
+    removeMachine(inst) {
+      const wm = world.find(inst);
+      if (wm) world.remove(wm);
+    },
+    broke(inst, into) {
+      const wm = world.find(inst);
+      if (wm) world.remove(wm);
+      else inventory.consume(inst.item);
+      for (const m of into) inventory.add(m); // anything that doesn't fit is lost on the floor
+    },
+  },
+);
+inspect = panel;
+
+function openBench(item: Item): void {
+  let inst = benches.get(item);
+  if (!inst) {
+    inst = { key: 'bench', kind: 'bench', item, asm: assemblyOf(item.type) ?? { slots: [] }, def: benchDef(), room: -1, vis: {}, switches: {} };
+    benches.set(item, inst);
+  }
+  panel.open(inst);
+}
+inventory.onOpen = (i) => {
+  const it = inventory.slots[i];
+  if (it) openBench(it);
+};
+
 // ------------------------------------------------------------------ player
 const player = S.makeSprite(S.playerTexture(), 0.9, 1.35);
 player.position.set(-2, 0, 0.5);
 scene.add(player);
 const PLAYER_R = 0.3;
 const SPEED = 4.2;
+const facing = new THREE.Vector2(0, -1);
 
 const keys = new Set<string>();
 const cam = { yaw: 0, yawTarget: 0, pitch: 0.92, dist: 15, distTarget: 15 };
 
+function hitsWall(x: number, z: number, r: number): boolean {
+  for (const b of colliders) if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
+  return false;
+}
 function blocked(x: number, z: number): boolean {
-  for (const b of colliders) if (x + PLAYER_R > b.x0 && x - PLAYER_R < b.x1 && z + PLAYER_R > b.z0 && z - PLAYER_R < b.z1) return true;
-  for (const m of machines) if (Math.hypot(x - m.obj.position.x, z - m.obj.position.z) < m.radius + PLAYER_R) return true;
+  if (hitsWall(x, z, PLAYER_R)) return true;
+  for (const m of world.machines) if (Math.hypot(x - m.obj.position.x, z - m.obj.position.z) < m.radius + PLAYER_R) return true;
   return false;
 }
 
-function nearestMachine(): Machine | null {
-  let best: Machine | null = null;
-  let bestD = Infinity;
-  for (const m of machines) {
-    const d = Math.hypot(player.position.x - m.obj.position.x, player.position.z - m.obj.position.z) - m.radius;
-    if (d < 1.3 && d < bestD) { best = m; bestD = d; }
-  }
-  return best;
+// Placement preview: a ring on the floor where the frame in your hand would go.
+const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.55, 32), new THREE.MeshBasicMaterial({ color: 0xe9c46a, transparent: true, opacity: 0.7, depthWrite: false }));
+ring.rotation.x = -Math.PI / 2;
+ring.position.y = 0.02;
+scene.add(ring);
+
+function placement(): { x: number; z: number; ok: boolean } | null {
+  const hand = inventory.hand;
+  if (!hand || !PLACEABLE[hand.type] || panel.isOpen) return null;
+  const tx = player.position.x + facing.x * 1.5;
+  const tz = player.position.z + facing.y * 1.5;
+  const s = world.snap(hand.type, tx, tz);
+  const r = world.radiusOf(hand.type);
+  const clear = !hitsWall(s.x, s.z, r) &&
+    world.machines.every((m) => Math.hypot(s.x - m.obj.position.x, s.z - m.obj.position.z) > m.radius + r + 0.1) &&
+    Math.hypot(s.x - player.position.x, s.z - player.position.z) > r + PLAYER_R;
+  return { x: s.x, z: s.z, ok: clear };
 }
 
-const DEFS: Record<Kind, MachineDef> = { engine: engineDef, rack: rackDef, pump: pumpDef, chiller: chillerDef };
-
 function interact(): void {
-  if (inspect.isOpen) return inspect.close();
-  const m = nearestMachine();
-  if (!m || !sim.state) return;
-  inspect.open(`${m.kind}:${m.room}`, DEFS[m.kind], Math.max(0, m.room));
+  if (panel.isOpen) return panel.close();
+  const p = placement();
+  if (p) {
+    if (!p.ok) return;
+    const item = inventory.takeOne(inventory.selected);
+    if (item && !world.place(item, p.x, p.z)) inventory.add(item);
+    return;
+  }
+  const m = world.nearest(player.position.x, player.position.z, 1.3);
+  if (m) panel.open(m.inst);
 }
 
 addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (e.repeat) return;
   if (k === 'f') interact();
-  else if (k === 'escape') inspect.close();
-  else if (k === 'q') cam.yawTarget -= Math.PI / 4;
+  else if (k === 'escape') panel.close();
+  else if (k === 'b' && inventory.hand) {
+    if (panel.isOpen) panel.close();
+    else openBench(inventory.hand);
+  } else if (k === 'q') cam.yawTarget -= Math.PI / 4;
   else if (k === 'e') cam.yawTarget += Math.PI / 4;
   keys.add(k);
 });
 addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 addEventListener('blur', () => keys.clear());
-renderer.domElement.addEventListener('pointerdown', () => inspect.isOpen && inspect.close());
+renderer.domElement.addEventListener('pointerdown', () => {
+  if (panel.isOpen && !panel.dragging) panel.close();
+});
 renderer.domElement.addEventListener('wheel', (e) => {
   cam.distTarget = THREE.MathUtils.clamp(cam.distTarget + Math.sign(e.deltaY) * 1.5, 8, 26);
 }, { passive: true });
@@ -236,15 +312,17 @@ const clock = new THREE.Clock();
 const tmpV = new THREE.Vector3();
 const tmpC = new THREE.Color();
 const white = new THREE.Color(0xffffff);
-const vis = Array.from({ length: ROOMS }, () => ({ ledger: 0, ref: 0, bell: 0, chimes: -1 }));
-let rackTimer = 0;
+const lastChimes: number[] = Array(ROOMS).fill(-1);
 let elapsed = 0;
+
+function engineAt(i: number): WorldMachine | null {
+  return sites.find((s) => s.kind === 'engine' && s.room === i)?.machine ?? null;
+}
 
 function update(dt: number): void {
   elapsed += dt;
 
-  // movement (camera-relative), disabled while hands are inside a machine
-  if (!inspect.isOpen) {
+  if (!panel.isOpen) {
     let fx = 0, fz = 0;
     if (keys.has('w')) fz -= 1;
     if (keys.has('s')) fz += 1;
@@ -255,43 +333,41 @@ function update(dt: number): void {
       const sin = Math.sin(cam.yaw), cos = Math.cos(cam.yaw);
       const dx = ((fx * cos + fz * sin) / len) * SPEED * dt;
       const dz = ((-fx * sin + fz * cos) / len) * SPEED * dt;
+      facing.set(dx, dz).normalize();
       const p = player.position;
       if (!blocked(p.x + dx, p.z)) p.x += dx;
       if (!blocked(p.x, p.z + dz)) p.z += dz;
-      player.children[0].position.y = Math.abs(Math.sin(elapsed * 11)) * 0.05; // little walk bob
+      player.children[0].position.y = Math.abs(Math.sin(elapsed * 11)) * 0.05;
     }
   }
 
-  // camera
   cam.yaw += (cam.yawTarget - cam.yaw) * Math.min(1, dt * 8);
   cam.dist += (cam.distTarget - cam.dist) * Math.min(1, dt * 8);
   const horiz = Math.cos(cam.pitch) * cam.dist;
-  camera.position.set(
-    player.position.x + Math.sin(cam.yaw) * horiz,
-    Math.sin(cam.pitch) * cam.dist,
-    player.position.z + Math.cos(cam.yaw) * horiz,
-  );
+  camera.position.set(player.position.x + Math.sin(cam.yaw) * horiz, Math.sin(cam.pitch) * cam.dist, player.position.z + Math.cos(cam.yaw) * horiz);
   camera.lookAt(player.position.x, 0.6, player.position.z);
 
-  // interaction hint
-  const near = inspect.isOpen ? null : nearestMachine();
-  if (near) {
-    tmpV.copy(near.obj.position).setY(2.1).project(camera);
+  // placement ring, or the interaction hint
+  const p = placement();
+  ring.visible = !!p;
+  if (p) {
+    ring.position.x = p.x;
+    ring.position.z = p.z;
+    (ring.material as THREE.MeshBasicMaterial).color.setHex(p.ok ? 0xe9c46a : 0xe76f51);
+  }
+  const near = panel.isOpen || p ? null : world.nearest(player.position.x, player.position.z, 1.3);
+  const hintAt = near ? near.obj.position : p && p.ok ? new THREE.Vector3(p.x, 0, p.z) : null;
+  if (hintAt) {
+    tmpV.set(hintAt.x, 2.1, hintAt.z).project(camera);
     hint.style.left = `${((tmpV.x + 1) / 2) * innerWidth}px`;
     hint.style.top = `${((1 - tmpV.y) / 2) * innerHeight}px`;
     hint.classList.remove('hidden');
   } else hint.classList.add('hidden');
 
-  // world reacts to simulation state
   const st = sim.state;
   if (st) {
-    const visScale = Math.min(sim.timeScale, 6);
     S.tempColor(st[H.coolantTemp], supplyMat.color);
     let fSum = 0, tf = 0;
-    rackTimer += dt;
-    const drawRacks = rackTimer > 0.1;
-    if (drawRacks) rackTimer = 0;
-
     for (let i = 0; i < ROOMS; i++) {
       const temp = room(st, i, R.temp);
       const flow = room(st, i, R.flow);
@@ -300,34 +376,25 @@ function update(dt: number): void {
       tf += flow * tOut;
       S.tempColor(tOut, branchReturnMats[i].color);
       roomFloorMats[i].color.copy(white).lerp(S.tempColor(temp, tmpC), 0.55);
-
       const b = branches[i];
       b.offset += flow * 1000 * 8 * dt;
       b.dots.forEach((d, k) => along(b, b.offset + (k * b.total) / b.dots.length, d.position));
 
-      const v = vis[i];
-      v.ledger += room(st, i, R.ledgerOmega) * visScale * dt;
-      v.ref += visScale * dt;
-      v.bell = Math.max(0, v.bell - dt * 0.9);
       const chimes = room(st, i, R.chimes);
-      if (v.chimes >= 0 && chimes > v.chimes) {
-        v.bell = 1;
-        const eng = machines.find((m) => m.kind === 'engine' && m.room === i)!;
+      const eng = engineAt(i);
+      if (lastChimes[i] >= 0 && chimes > lastChimes[i] && eng) {
         const d = player.position.distanceTo(eng.obj.position);
-        if (inspect.isShowing(`engine:${i}`)) chime(0.3);
+        if (panel.instance === eng.inst) chime(0.3);
         else if (d < 9) chime(0.25 * (1 - d / 9));
       }
-      v.chimes = chimes;
-      const fill = room(st, i, R.jarPresent) > 0.5 ? room(st, i, R.pbFill) : 0;
-      engineSprites[i].draw(v.ledger, v.ref, room(st, i, R.valve), fill, v.bell);
-      if (drawRacks) rackSprites[i].draw(room(st, i, R.rackOn) > 0.5, temp, elapsed, room(st, i, R.blades));
+      lastChimes[i] = chimes;
     }
     S.tempColor(fSum > 1e-7 ? tf / fSum : st[H.coolantTemp], returnMat.color);
-    inspect.draw(st, dt, sim.timeScale);
+    panel.draw(st, dt, sim.timeScale);
   }
+  world.update(st, dt, sim.timeScale);
   hud.update(dt);
-  // The debug panel must never cover a machine you're working on.
-  document.getElementById('hud')!.classList.toggle('dim', inspect.isOpen);
+  document.getElementById('hud')!.classList.toggle('dim', panel.isOpen);
 }
 
 function frame(): void {
@@ -337,3 +404,6 @@ function frame(): void {
   requestAnimationFrame(frame);
 }
 frame();
+
+// Debug handle for poking at the world from the browser console.
+(window as unknown as { __rudon: unknown }).__rudon = { world, inventory, sim, player, panel, facing };

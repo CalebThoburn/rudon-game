@@ -1,8 +1,9 @@
 //! Rudon simulation core: Prototype 01.
 //!
-//! One "sector": three rooms with server racks, cooled by a shared coolant
-//! loop (pump, chiller, one valve branch per room). Each room's valve is
-//! driven by a Reconciliation Engine, a purely mechanical controller:
+//! One "sector": three rooms cooled by a shared coolant loop (pump, chiller,
+//! one valve branch per room). Server racks can stand anywhere and heat the
+//! room they're in. Each room's branch has a **valve site**; a Reconciliation
+//! Engine built there controls the branch with a purely mechanical controller:
 //!
 //! * A jar of **peanut butter** sits in the room air. Its viscosity falls as it
 //!   warms (Arrhenius law), so it acts as the temperature sensor.
@@ -13,12 +14,16 @@
 //!   That output turns a **lead screw** that opens or closes the coolant valve.
 //!   In other words, a mechanical integral controller.
 //!
-//! Nothing is scripted: the valve moves only because the parts make it move.
+//! Which of those parts are physically present is decided by the player (the
+//! TypeScript side tells the sim). Nothing is scripted: the valve moves only
+//! because the parts that are there make it move. A branch with no valve body
+//! fitted is sealed by Rudon's self-closing couplings.
 //! See the vault notes `Simulation` and `Reconciliation Engine`.
 
 use std::f64::consts::TAU;
 
 pub const ROOMS: usize = 3;
+pub const MAX_RACKS: usize = 16;
 
 // ---------- physical constants ----------
 const RHO_WATER: f64 = 1000.0; // kg/m³
@@ -30,7 +35,8 @@ const C_ROOM: f64 = 4.0e5; // J/K: air, furniture, rack chassis
 const G_AMBIENT: f64 = 60.0; // W/K: leak to the (warm) surrounding building
 const T_AMBIENT: f64 = 30.0; // °C
 const G_ROOM_ROOM: f64 = 25.0; // W/K: through shared walls
-const BASE_LOADS: [f64; ROOMS] = [2500.0, 4000.0, 6000.0]; // W per server rack
+const BLADE_HEAT: f64 = 700.0; // W per working server blade
+const STOCK_BLADES: [u8; ROOMS] = [4, 6, 8]; // what Rudon installed in each room's rack
 
 // ---------- coolant loop ----------
 const PUMP_HEAD: f64 = 70_000.0; // Pa at zero flow
@@ -41,8 +47,9 @@ const VALVE_MIN: f64 = 0.02; // a "closed" valve still weeps a little
 const UA_COIL: f64 = 900.0; // W/K: room heat-exchanger coil
 const C_COOLANT: f64 = 2.0e5; // J/K: ~50 L reservoir
 const T_CHILL_SET: f64 = 8.0; // °C
-const CHILL_MAX: f64 = 20_000.0; // W
+const CHILL_MAX: f64 = 20_000.0; // W with one fan
 const CHILL_GAIN: f64 = 4000.0; // W/K
+const CHILL_FAN_FACTOR: [f64; 3] = [0.3, 1.0, 1.3]; // capacity vs. fans fitted (0, 1, 2)
 const G_COOLANT_AMBIENT: f64 = 10.0; // W/K
 
 // ---------- Reconciliation Engine ----------
@@ -59,15 +66,11 @@ const OMEGA_REF: f64 = 1.0; // rad/s: escapement rate
 /// Calibrated by Rudon so the drums agree at 22 °C with a full jar.
 const MOTOR_TORQUE: f64 = K_GEOM * MU_REF * OMEGA_REF;
 const HOLD_DAMPING: f64 = 2.0; // N·m·s: a hand gripping the drum
+const BEARING_DAMPING: f64 = 0.005; // N·m·s: drum spinning with no jar fitted
 const VALVE_GAIN: f64 = 0.002; // valve travel per radian of differential output (too much and it hunts)
 const DRAIN_RATE: f64 = 0.003; // jar fraction per second, tap open
-const CHIME_ARM_ERR: f64 = 0.02; // rad/s of drum disagreement that arms the chime
 const SUPPLY_RATE: f64 = 0.0005; // jar fraction per second, cafeteria supply line
-
-const BEARING_DAMPING: f64 = 0.005; // N·m·s: drum spinning with no jar fitted
-const RACK_BAYS: u8 = 8; // blade bays per rack
-const RACK_BLADES_STOCK: u8 = 6; // blades Rudon installed; each adds load / 6
-const CHILL_FAN_FACTOR: [f64; 3] = [0.3, 1.0, 1.3]; // capacity vs. fans fitted (0, 1, 2)
+const CHIME_ARM_ERR: f64 = 0.02; // rad/s of drum disagreement that arms the chime
 
 const MAX_SUBSTEP: f64 = 0.5; // s of game time
 
@@ -81,89 +84,116 @@ fn shear_area(fill: f64) -> f64 {
     0.05 + 0.95 * fill.clamp(0.0, 1.0)
 }
 
+// Engine part flags (command 21 / state field `engine_flags`).
+pub const E_PRESENT: u32 = 1; // an engine frame stands on this room's valve site
+pub const E_VALVE: u32 = 2; // valve body fitted in the branch
+pub const E_ACTUATED: u32 = 4; // differential + lead screw + linkage pin all present
+pub const E_LEDGER: u32 = 8; // ledger drum + its drive motor present
+pub const E_REFERENCE: u32 = 16; // reference drum + escapement present
+pub const E_JAR: u32 = 32; // peanut butter jar fitted
+pub const E_ALL: u32 = 63;
+
 #[derive(Clone, Debug)]
 pub struct Room {
     pub temp: f64,
-    /// Heat output of the stock rack (6 blades) when powered.
-    pub heat_load: f64,
-    pub rack_on: bool,
-    pub blades: u8,
 }
 
-impl Room {
-    pub fn rack_power(&self) -> f64 {
-        if self.rack_on { self.heat_load * self.blades as f64 / RACK_BLADES_STOCK as f64 } else { 0.0 }
-    }
+#[derive(Clone, Debug, Default)]
+pub struct Rack {
+    pub active: bool,
+    /// Room index it stands in, or -1 (corridor: heat goes to the building).
+    pub zone: i8,
+    /// Working blades fitted.
+    pub blades: u8,
+    pub on: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Engine {
+    pub parts: u32,
     pub pb_temp: f64,
     pub pb_fill: f64,
     pub ledger_omega: f64,
     pub ledger_angle: f64,
     pub ref_angle: f64,
     pub valve: f64,
-    pub linkage_connected: bool,
     pub drain_open: bool,
     pub supply_connected: bool,
     pub holding: bool,
     pub chimes: u32,
-    pub jar_present: bool,
     last_err_positive: bool,
-    /// The chime is armed once the drums disagree noticeably.
     chime_armed: bool,
+}
+
+impl Engine {
+    fn has(&self, flag: u32) -> bool {
+        self.parts & flag != 0
+    }
+    /// Is this branch open to flow at all?
+    fn branch_open(&self) -> bool {
+        self.has(E_PRESENT) && self.has(E_VALVE)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Sector {
     pub rooms: [Room; ROOMS],
+    pub racks: [Rack; MAX_RACKS],
     pub engines: [Engine; ROOMS],
     pub coolant_temp: f64,
+    /// Pump built on its site with motor, impeller and cover.
+    pub pump_works: bool,
     pub pump_on: bool,
+    /// Chiller built on its site with compressor and fuse.
+    pub chiller_works: bool,
     pub chiller_on: bool,
-    pub impeller: bool,
-    pub fuse: bool,
     pub fans: u8,
+    pub load_scale: f64,
     pub pump_head: f64,
     pub chiller_power: f64,
     pub flows: [f64; ROOMS],
     pub heat_removed: [f64; ROOMS],
+    pub room_load: [f64; ROOMS],
     pub time: f64,
 }
 
 impl Sector {
     pub fn new(load_scale: f64) -> Self {
-        let room = |i: usize| Room { temp: 26.0, heat_load: BASE_LOADS[i] * load_scale, rack_on: true, blades: RACK_BLADES_STOCK };
         let engine = || Engine {
+            parts: E_ALL,
             pb_temp: 26.0,
             pb_fill: 1.0,
             ledger_omega: OMEGA_REF,
             ledger_angle: 0.0,
             ref_angle: 0.0,
             valve: 0.3,
-            linkage_connected: true,
             drain_open: false,
             supply_connected: true,
             holding: false,
             chimes: 0,
-            jar_present: true,
             last_err_positive: true,
             chime_armed: false,
         };
+        let mut racks: [Rack; MAX_RACKS] = Default::default();
+        for i in 0..ROOMS {
+            racks[i] = Rack { active: true, zone: i as i8, blades: STOCK_BLADES[i], on: true };
+        }
         Sector {
-            rooms: [room(0), room(1), room(2)],
+            rooms: [Room { temp: 26.0 }, Room { temp: 26.0 }, Room { temp: 26.0 }],
+            racks,
             engines: [engine(), engine(), engine()],
             coolant_temp: 10.0,
+            pump_works: true,
             pump_on: true,
+            chiller_works: true,
             chiller_on: true,
-            impeller: true,
-            fuse: true,
             fans: 1,
+            load_scale,
             pump_head: 0.0,
             chiller_power: 0.0,
             flows: [0.0; ROOMS],
             heat_removed: [0.0; ROOMS],
+            room_load: [0.0; ROOMS],
             time: 0.0,
         }
     }
@@ -178,17 +208,26 @@ impl Sector {
     }
 
     fn substep(&mut self, dt: f64) {
+        // 0. Heat from racks, by the room they stand in.
+        self.room_load = [0.0; ROOMS];
+        for r in &self.racks {
+            if r.active && r.on && r.zone >= 0 && (r.zone as usize) < ROOMS {
+                self.room_load[r.zone as usize] += r.blades as f64 * BLADE_HEAT * self.load_scale;
+            }
+        }
+
         // 1. Hydraulics: parallel branches between supply and return headers,
         //    fed by a pump with a linear curve. One-node nodal analysis.
         let mut cond = [0.0; ROOMS];
         for (c, e) in cond.iter_mut().zip(&self.engines) {
-            let x = e.valve.max(VALVE_MIN);
-            *c = 1.0 / (R_PIPE + R_VALVE_OPEN / (x * x));
+            if e.branch_open() {
+                let x = e.valve.max(VALVE_MIN);
+                *c = 1.0 / (R_PIPE + R_VALVE_OPEN / (x * x));
+            }
         }
         let g_pump = 1.0 / R_PUMP;
         let g_sum: f64 = cond.iter().sum();
-        // No impeller, no head: the motor just spins a shaft.
-        self.pump_head = if self.pump_on && self.impeller { PUMP_HEAD * g_pump / (g_pump + g_sum) } else { 0.0 };
+        self.pump_head = if self.pump_works && self.pump_on { PUMP_HEAD * g_pump / (g_pump + g_sum) } else { 0.0 };
 
         // 2. Heat exchange at each room's coil (effectiveness-NTU).
         let ts = self.coolant_temp;
@@ -210,14 +249,13 @@ impl Sector {
         // 3. Room temperatures (explicit, using old values).
         let mut d_room = [0.0; ROOMS];
         for i in 0..ROOMS {
-            let r = &self.rooms[i];
-            let mut p = r.rack_power();
-            p += G_AMBIENT * (T_AMBIENT - r.temp);
+            let t = self.rooms[i].temp;
+            let mut p = self.room_load[i] + G_AMBIENT * (T_AMBIENT - t);
             if i > 0 {
-                p += G_ROOM_ROOM * (self.rooms[i - 1].temp - r.temp);
+                p += G_ROOM_ROOM * (self.rooms[i - 1].temp - t);
             }
             if i + 1 < ROOMS {
-                p += G_ROOM_ROOM * (self.rooms[i + 1].temp - r.temp);
+                p += G_ROOM_ROOM * (self.rooms[i + 1].temp - t);
             }
             p -= self.heat_removed[i];
             d_room[i] = p / C_ROOM * dt;
@@ -227,7 +265,7 @@ impl Sector {
         }
 
         // 4. Coolant reservoir and chiller.
-        self.chiller_power = if self.chiller_on && self.fuse {
+        self.chiller_power = if self.chiller_works && self.chiller_on {
             let cap = CHILL_MAX * CHILL_FAN_FACTOR[self.fans.min(2) as usize];
             (CHILL_GAIN * (ts - T_CHILL_SET)).clamp(0.0, cap)
         } else {
@@ -240,8 +278,10 @@ impl Sector {
         for i in 0..ROOMS {
             let room_t = self.rooms[i].temp;
             let e = &mut self.engines[i];
-
-            let mut b = if e.jar_present {
+            if !e.has(E_PRESENT) {
+                continue;
+            }
+            let mut b = if e.has(E_JAR) {
                 if e.drain_open {
                     e.pb_fill -= DRAIN_RATE * dt;
                 }
@@ -260,18 +300,22 @@ impl Sector {
             if e.holding {
                 b += HOLD_DAMPING;
             }
+            let torque = if e.has(E_LEDGER) { MOTOR_TORQUE } else { 0.0 };
             // Implicit update: J dω/dt = τ - bω (stable for any dt).
-            e.ledger_omega = (DRUM_J * e.ledger_omega + dt * MOTOR_TORQUE) / (DRUM_J + dt * b);
+            e.ledger_omega = (DRUM_J * e.ledger_omega + dt * torque) / (DRUM_J + dt * b);
+            if !e.has(E_LEDGER) {
+                e.ledger_omega = 0.0; // no drum to turn
+            }
+            let ref_omega = if e.has(E_REFERENCE) { OMEGA_REF } else { 0.0 };
             e.ledger_angle = (e.ledger_angle + e.ledger_omega * dt) % TAU;
-            e.ref_angle = (e.ref_angle + OMEGA_REF * dt) % TAU;
+            e.ref_angle = (e.ref_angle + ref_omega * dt) % TAU;
 
-            let err = e.ledger_omega - OMEGA_REF;
-            if e.linkage_connected {
+            let err = e.ledger_omega - ref_omega;
+            if e.has(E_ACTUATED) && e.has(E_VALVE) {
                 // Differential output = half the speed difference → lead screw → valve.
                 e.valve = (e.valve + VALVE_GAIN * 0.5 * err * dt).clamp(0.0, 1.0);
             }
-            // The chime rings when a real imbalance has been reconciled:
-            // the drums disagreed noticeably, then the error crossed zero.
+            // The chime rings when a real imbalance has been reconciled.
             if err.abs() > CHIME_ARM_ERR {
                 e.chime_armed = true;
             }
@@ -288,23 +332,35 @@ impl Sector {
         self.time += dt;
     }
 
-    pub fn command(&mut self, kind: u32, room: usize, value: f64) {
+    pub fn command(&mut self, kind: u32, index: usize, value: f64) {
         let on = value > 0.5;
-        let room = room.min(ROOMS - 1);
+        let room = index.min(ROOMS - 1);
+        let bits = value.max(0.0) as u32;
         match kind {
-            0 => self.rooms[room].rack_on = on,
             1 => self.engines[room].drain_open = on,
             2 => self.engines[room].supply_connected = on,
             3 => self.engines[room].holding = on,
-            4 => self.engines[room].linkage_connected = on,
-            5 => self.chiller_on = on,
-            6 => self.pump_on = on,
-            7 => self.engines[room].jar_present = on,
-            8 => self.engines[room].pb_fill = value.clamp(0.0, 1.0),
-            9 => self.rooms[room].blades = (value.max(0.0) as u8).min(RACK_BAYS),
-            10 => self.impeller = on,
-            11 => self.fuse = on,
-            12 => self.fans = (value.max(0.0) as u8).min(2),
+            20 => {
+                // Rack: bit0 active, bit1 on, bits2-5 blades, bits6-7 zone+1.
+                if let Some(r) = self.racks.get_mut(index) {
+                    r.active = bits & 1 != 0;
+                    r.on = bits & 2 != 0;
+                    r.blades = ((bits >> 2) & 15) as u8;
+                    r.zone = ((bits >> 6) & 3) as i8 - 1;
+                }
+            }
+            21 => self.engines[room].parts = bits & E_ALL,
+            22 => self.engines[room].pb_fill = value.clamp(0.0, 1.0),
+            23 => self.engines[room].valve = value.clamp(0.0, 1.0),
+            24 => {
+                self.pump_works = bits & 1 != 0;
+                self.pump_on = bits & 2 != 0;
+            }
+            25 => {
+                self.chiller_works = bits & 1 != 0;
+                self.chiller_on = bits & 2 != 0;
+            }
+            26 => self.fans = bits.min(2) as u8,
             _ => {}
         }
     }
@@ -314,41 +370,34 @@ impl Sector {
         out[1] = self.coolant_temp;
         out[2] = self.chiller_power;
         out[3] = self.pump_head;
-        out[4] = (self.pump_on as u8
-            | (self.chiller_on as u8) << 1
-            | (self.impeller as u8) << 2
-            | (self.fuse as u8) << 3) as f64;
+        out[4] = ((self.pump_head > 0.0) as u8 | ((self.chiller_power > 0.0) as u8) << 1) as f64;
         out[5] = self.fans as f64;
         for i in 0..ROOMS {
-            let r = &self.rooms[i];
             let e = &self.engines[i];
             let o = &mut out[STATE_HEADER + i * ROOM_STRIDE..STATE_HEADER + (i + 1) * ROOM_STRIDE];
-            o[0] = r.temp;
-            o[1] = r.heat_load;
-            o[2] = r.rack_on as u8 as f64;
-            o[3] = self.flows[i];
-            o[4] = self.heat_removed[i];
-            o[5] = e.pb_temp;
-            o[6] = e.pb_fill;
-            o[7] = if e.jar_present { pb_viscosity(e.pb_temp) } else { 0.0 };
-            o[8] = e.ledger_omega;
-            o[9] = e.ledger_angle;
-            o[10] = e.ref_angle;
-            o[11] = e.valve;
-            o[12] = e.linkage_connected as u8 as f64;
-            o[13] = e.drain_open as u8 as f64;
-            o[14] = e.supply_connected as u8 as f64;
-            o[15] = e.holding as u8 as f64;
-            o[16] = e.chimes as f64;
-            o[17] = e.jar_present as u8 as f64;
-            o[18] = r.blades as f64;
+            o[0] = self.rooms[i].temp;
+            o[1] = self.room_load[i];
+            o[2] = self.flows[i];
+            o[3] = self.heat_removed[i];
+            o[4] = e.pb_temp;
+            o[5] = e.pb_fill;
+            o[6] = if e.has(E_JAR) { pb_viscosity(e.pb_temp) } else { 0.0 };
+            o[7] = e.ledger_omega;
+            o[8] = e.ledger_angle;
+            o[9] = e.ref_angle;
+            o[10] = e.valve;
+            o[11] = e.parts as f64;
+            o[12] = e.drain_open as u8 as f64;
+            o[13] = e.supply_connected as u8 as f64;
+            o[14] = e.holding as u8 as f64;
+            o[15] = e.chimes as f64;
         }
     }
 }
 
 // ---------- state layout shared with TypeScript (src/simLayout.ts) ----------
 pub const STATE_HEADER: usize = 6;
-pub const ROOM_STRIDE: usize = 19;
+pub const ROOM_STRIDE: usize = 16;
 pub const STATE_LEN: usize = STATE_HEADER + ROOMS * ROOM_STRIDE;
 
 pub struct World {
@@ -407,23 +456,25 @@ pub unsafe extern "C" fn world_free(w: *mut World) {
 /// `w` must come from `world_new`.
 #[no_mangle]
 pub unsafe extern "C" fn world_resize(w: *mut World, n: u32) {
-    (*w).resize(n as usize);
+    let w = &mut *w;
+    w.resize(n as usize);
 }
 
 /// # Safety
 /// `w` must come from `world_new`.
 #[no_mangle]
 pub unsafe extern "C" fn world_step(w: *mut World, dt: f64) {
-    (*w).step(dt);
+    let w = &mut *w;
+    w.step(dt);
 }
 
 /// # Safety
 /// `w` must come from `world_new`.
 #[no_mangle]
-pub unsafe extern "C" fn world_command(w: *mut World, sector: u32, kind: u32, room: u32, value: f64) {
+pub unsafe extern "C" fn world_command(w: *mut World, sector: u32, kind: u32, index: u32, value: f64) {
     let w = &mut *w;
     if let Some(s) = w.sectors.get_mut(sector as usize) {
-        s.command(kind, room as usize, value);
+        s.command(kind, index as usize, value);
     }
 }
 
@@ -454,10 +505,15 @@ mod tests {
     use super::*;
 
     fn run(s: &mut Sector, hours: f64) {
-        let steps = (hours * 3600.0) as usize;
-        for _ in 0..steps {
+        for _ in 0..(hours * 3600.0) as usize {
             s.step(1.0);
         }
+    }
+
+    fn settled() -> Sector {
+        let mut s = Sector::new(1.0);
+        run(&mut s, 12.0);
+        s
     }
 
     fn report(label: &str, s: &Sector) {
@@ -470,6 +526,10 @@ mod tests {
         );
     }
 
+    fn rack_bits(active: bool, on: bool, blades: u8, zone: i8) -> f64 {
+        (active as u32 | (on as u32) << 1 | (blades as u32) << 2 | ((zone + 1) as u32) << 6) as f64
+    }
+
     #[test]
     fn viscosity_falls_with_heat() {
         assert!(pb_viscosity(30.0) < pb_viscosity(22.0));
@@ -479,8 +539,7 @@ mod tests {
 
     #[test]
     fn engines_regulate_rooms_to_setpoint() {
-        let mut s = Sector::new(1.0);
-        run(&mut s, 12.0);
+        let s = settled();
         report("baseline", &s);
         for r in &s.rooms {
             assert!((r.temp - 22.0).abs() < 1.0, "room at {:.2}", r.temp);
@@ -489,85 +548,82 @@ mod tests {
 
     #[test]
     fn draining_peanut_butter_overcools_and_starves_neighbours() {
-        let mut base = Sector::new(1.0);
-        run(&mut base, 12.0);
+        let base = settled();
         let mut s = base.clone();
-        s.command(2, 1, 0.0); // cut supply line to room 1's jar
-        s.command(1, 1, 1.0); // open the drain tap
+        s.command(2, 1, 0.0);
+        s.command(1, 1, 1.0);
         run(&mut s, 6.0);
         report("drained room 1", &s);
         assert!(s.engines[1].pb_fill < 0.01);
-        assert!(s.engines[1].valve > 0.95, "valve pegs open");
-        assert!(s.rooms[1].temp < base.rooms[1].temp - 1.0, "room 1 over-cools");
-        assert!(s.flows[2] < base.flows[2], "room 2 loses coolant flow");
+        assert!(s.engines[1].valve > 0.95);
+        assert!(s.rooms[1].temp < base.rooms[1].temp - 1.0);
+        assert!(s.flows[2] < base.flows[2]);
     }
 
     #[test]
     fn holding_the_drum_closes_the_valve_and_heats_the_room() {
-        let mut s = Sector::new(1.0);
-        run(&mut s, 12.0);
-        let before = s.rooms[0].temp;
-        s.command(3, 0, 1.0);
+        let mut s = settled();
+        let before = s.rooms[2].temp;
+        s.command(3, 2, 1.0);
         run(&mut s, 2.0);
-        report("held drum 0", &s);
-        assert!(s.engines[0].valve < 0.05);
-        assert!(s.rooms[0].temp > before + 2.0);
+        assert!(s.engines[2].valve < 0.05);
+        assert!(s.rooms[2].temp > before + 2.0);
     }
 
     #[test]
-    fn pump_failure_heats_everything() {
-        let mut s = Sector::new(1.0);
-        run(&mut s, 12.0);
-        s.command(6, 0, 0.0);
-        run(&mut s, 3.0);
-        report("pump off", &s);
-        assert!(s.rooms.iter().all(|r| r.temp > 28.0));
+    fn moving_a_rack_moves_its_heat() {
+        let mut s = settled();
+        // Carry room 2's 8-blade rack into room 0 (which already has 4 blades).
+        s.command(20, 2, rack_bits(true, true, 8, 0));
+        run(&mut s, 6.0);
+        report("rack moved 2 → 0", &s);
+        assert!((s.room_load[0] - 12.0 * BLADE_HEAT).abs() < 1.0);
+        assert_eq!(s.room_load[2], 0.0);
+        assert!(s.engines[0].valve > 0.9, "room 0's engine opens up");
+        assert!(s.rooms[0].temp > 23.0, "12 blades overwhelm room 0's branch even fully open");
+        assert!((s.rooms[2].temp - 22.0).abs() < 1.0, "room 2 still gains heat from the building; its engine holds it");
+        assert!(s.engines[2].valve < 0.3, "...with the valve nearly shut");
     }
 
     #[test]
-    fn pulling_blades_cools_and_adding_them_heats() {
-        let mut s = Sector::new(1.0);
-        run(&mut s, 12.0);
-        let mut fewer = s.clone();
-        fewer.command(9, 2, 2.0);
-        run(&mut fewer, 3.0);
-        report("room 2 with 2 blades", &fewer);
-        assert!(fewer.engines[2].valve < s.engines[2].valve - 0.1, "engine throttles back");
-        let mut more = s.clone();
-        more.command(9, 0, 8.0);
-        run(&mut more, 3.0);
-        report("room 0 with 8 blades", &more);
-        assert!(more.engines[0].valve > s.engines[0].valve + 0.05, "engine opens up");
-    }
-
-    #[test]
-    fn removing_jar_races_drum_and_opens_valve() {
-        let mut s = Sector::new(1.0);
-        run(&mut s, 12.0);
-        s.command(7, 1, 0.0);
+    fn removing_the_engine_seals_the_branch() {
+        let mut s = settled();
+        s.command(21, 1, 0.0); // engine frame gone from room 1's site
         run(&mut s, 2.0);
-        assert!(s.engines[1].ledger_omega > 10.0);
-        assert!(s.engines[1].valve > 0.99);
-        s.command(8, 1, 1.0);
-        s.command(7, 1, 1.0);
-        run(&mut s, 12.0);
-        assert!((s.rooms[1].temp - 22.0).abs() < 1.0, "re-fitting the jar restores control");
+        assert_eq!(s.flows[1], 0.0);
+        assert!(s.rooms[1].temp > 30.0);
     }
 
     #[test]
-    fn missing_impeller_or_fuse_stops_cooling() {
-        let mut s = Sector::new(1.0);
-        run(&mut s, 12.0);
-        let mut a = s.clone();
-        a.command(10, 0, 0.0);
+    fn missing_drums_drive_the_valve_to_the_stops() {
+        let mut a = settled();
+        a.command(21, 0, (E_ALL & !E_REFERENCE) as f64); // no reference: ledger always "ahead"
+        run(&mut a, 2.0);
+        assert!(a.engines[0].valve > 0.99);
+        let mut b = settled();
+        b.command(21, 0, (E_ALL & !E_LEDGER) as f64); // no ledger drive: always "behind"
+        run(&mut b, 2.0);
+        assert!(b.engines[0].valve < 0.01);
+        let mut c = settled();
+        let v = c.engines[0].valve;
+        c.command(21, 0, (E_ALL & !E_ACTUATED) as f64); // linkage broken: valve frozen
+        c.command(1, 0, 1.0);
+        run(&mut c, 2.0);
+        assert!((c.engines[0].valve - v).abs() < 1e-9);
+    }
+
+    #[test]
+    fn broken_pump_or_chiller_stops_cooling() {
+        let mut a = settled();
+        a.command(24, 0, 2.0); // switched on but not working (no impeller, say)
         run(&mut a, 0.1);
         assert_eq!(a.pump_head, 0.0);
-        let mut b = s.clone();
-        b.command(11, 0, 0.0);
+        let mut b = settled();
+        b.command(25, 0, 2.0);
         run(&mut b, 0.1);
         assert_eq!(b.chiller_power, 0.0);
-        let mut c = s.clone();
-        c.command(12, 0, 0.0); // no fans: 30% capacity
+        let mut c = settled();
+        c.command(26, 0, 0.0);
         run(&mut c, 3.0);
         report("no chiller fans", &c);
         assert!(c.chiller_power <= CHILL_MAX * 0.3 + 1.0);
@@ -578,11 +634,11 @@ mod tests {
         unsafe {
             let w = world_new(4, 7);
             world_step(w, 10.0);
-            world_command(w, 0, 0, 2, 0.0);
+            world_command(w, 0, 21, 2, 0.0);
             let p = world_state(w, 0);
             assert!(!p.is_null());
             let st = std::slice::from_raw_parts(p, STATE_LEN);
-            assert_eq!(st[STATE_HEADER + 2 * ROOM_STRIDE + 2], 0.0); // rack 2 off
+            assert_eq!(st[STATE_HEADER + 2 * ROOM_STRIDE + 11], 0.0); // engine 2 parts gone
             assert!(world_state(w, 99).is_null());
             world_free(w);
         }

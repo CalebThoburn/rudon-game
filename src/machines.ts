@@ -1,9 +1,10 @@
-// Machine definitions for the inspect panel: what each machine is made of,
-// what you can do to it, and how it looks. Part changes go to the simulation
-// through `sync`, so the physics only knows what's physically there.
-import { one, type Item } from './items';
-import { PW, PH, type Ctx, type MachineDef, type SlotContent, type SlotDef } from './inspect';
-import { Cmd, F, H, R, ROOMS, room } from './simLayout';
+// How each assembly looks and what you can do to it. The art draws whatever
+// parts are actually present (it never assumes), so the same drawing serves as
+// the inspect panel and as the machine's front in the world.
+import { CHILLER, ENGINE as EN, PUMP, RACK, works } from './assemblies';
+import { leverPos, PW, PH, type Ctx, type PanelDef } from './inspect';
+import { drawItem, type Item } from './items';
+import { Cmd, H, R, ROOMS, room } from './simLayout';
 import { tempColor } from './sprites';
 
 const INK = '#2a2118';
@@ -13,7 +14,8 @@ function inked(g: CanvasRenderingContext2D, fill: string, w = 3): void {
   g.fillStyle = fill; g.fill(); g.strokeStyle = INK; g.lineWidth = w; g.stroke();
 }
 
-function background(g: CanvasRenderingContext2D, top = '#3b2c1a', bottom = '#1f170e'): void {
+function background(g: CanvasRenderingContext2D, c: Ctx, top = '#3b2c1a', bottom = '#1f170e'): void {
+  if (c.world) return;
   const bg = g.createLinearGradient(0, 0, 0, PH);
   bg.addColorStop(0, top);
   bg.addColorStop(1, bottom);
@@ -42,7 +44,7 @@ function gear(g: CanvasRenderingContext2D, x: number, y: number, r: number, teet
   g.restore();
 }
 
-/** An empty socket where a part could go. */
+/** An empty mounting point. */
 function socket(g: CanvasRenderingContext2D, x: number, y: number, r: number): void {
   g.save();
   g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fillStyle = '#00000055'; g.fill();
@@ -50,38 +52,24 @@ function socket(g: CanvasRenderingContext2D, x: number, y: number, r: number): v
   g.restore();
 }
 
-/** A pull lever: up = on. `drag` nudges the handle while the player pulls it. */
-function lever(g: CanvasRenderingContext2D, x: number, y: number, on: boolean, drag: number): void {
-  g.beginPath(); g.roundRect(x - 22, y - 50, 44, 100, 8); inked(g, '#4a4a4a');
-  g.fillStyle = on ? '#7dff8a' : '#ff5a3c';
-  g.beginPath(); g.arc(x, y - 38, 5, 0, Math.PI * 2); g.fill();
-  const a = (on ? -0.9 : 0.9) + Math.max(-0.5, Math.min(0.5, drag / 80));
-  g.save(); g.translate(x, y + 10); g.rotate(a);
-  g.beginPath(); g.roundRect(-5, -52, 10, 52, 4); inked(g, '#9aa3a8');
-  g.beginPath(); g.arc(0, -52, 11, 0, Math.PI * 2); inked(g, '#c0392b');
-  g.restore();
+/** A knife switch seen from the front: knob slides up (on) and down (off). */
+function lever(g: CanvasRenderingContext2D, c: Ctx, id: string, x: number, top: number, bottom: number): void {
+  const p = leverPos(c, id, top, bottom);
+  const y = top + p * (bottom - top);
+  g.beginPath(); g.roundRect(x - 24, top - 34, 48, bottom - top + 68, 10); inked(g, '#4a4a4a');
+  g.fillStyle = '#1a1a1a'; g.fillRect(x - 5, top, 10, bottom - top);
+  g.fillStyle = c.switches[id] ? '#7dff8a' : '#ff5a3c';
+  g.beginPath(); g.arc(x, top - 22, 6, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.roundRect(x - 20, y - 12, 40, 24, 8); inked(g, '#c0392b');
+  g.strokeStyle = '#ffffff44'; g.lineWidth = 2; g.beginPath(); g.moveTo(x - 12, y - 5); g.lineTo(x + 12, y - 5); g.stroke();
 }
 
-/** Lever gesture: drag up switches on, down switches off. */
-function leverDrag(send: (c: Ctx, on: boolean) => void) {
-  return (c: Ctx, _dx: number, dy: number): boolean => {
-    if (dy < -28) { send(c, true); return true; }
-    if (dy > 28) { send(c, false); return true; }
-    return false;
-  };
-}
-
-function fastenersAround(plate: string, accepts: 'screw' | 'bolt', pts: [number, number][], hold: number, tool?: 'wrench'): SlotDef[] {
-  return pts.map(([x, y], k) => ({ id: `${plate}:f${k}`, kind: 'fastener', accepts, x, y, r: 16, plate, hold, tool }));
-}
-
-function fitted(slots: SlotDef[], items: Record<string, Item | null>): Record<string, SlotContent> {
-  const out: Record<string, SlotContent> = {};
-  for (const s of slots) {
-    if (s.kind === 'fastener') out[s.id] = { item: one(s.accepts), fastener: 'tight' };
-    else out[s.id] = { item: s.id in items ? items[s.id] : one(s.accepts) };
+function pipe(g: CanvasRenderingContext2D, pts: [number, number][], color: string, w = 18): void {
+  g.lineJoin = 'round';
+  for (const [stroke, width] of [[INK, w + 8], [color, w]] as const) {
+    g.strokeStyle = stroke; g.lineWidth = width;
+    g.beginPath(); pts.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
   }
-  return out;
 }
 
 function flowDots(g: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, offset: number, n = 8): void {
@@ -93,139 +81,144 @@ function flowDots(g: CanvasRenderingContext2D, x0: number, y0: number, x1: numbe
   }
 }
 
-function pipe(g: CanvasRenderingContext2D, pts: [number, number][], color: string, w = 18): void {
-  g.lineJoin = 'round';
-  for (const [stroke, width] of [[INK, w + 8], [color, w]] as const) {
-    g.strokeStyle = stroke; g.lineWidth = width;
-    g.beginPath(); pts.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
-  }
+function shaft(g: CanvasRenderingContext2D, pts: [number, number][]): void {
+  g.lineWidth = 7; g.strokeStyle = INK; g.beginPath(); pts.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
+  g.lineWidth = 3; g.strokeStyle = '#8c8c8c'; g.stroke();
 }
 
+const onSite = (c: Ctx) => c.room >= 0;
+const sim = (c: Ctx, field: number, fallback = 0) => (onSite(c) ? room(c.state, c.room, field) : fallback);
 const totalFlow = (st: Float64Array) => {
   let f = 0;
   for (let i = 0; i < ROOMS; i++) f += room(st, i, R.flow);
   return f;
 };
+const noSync = () => {};
 
 // ======================================================================
 // Reconciliation Engine
 // ======================================================================
-const REF = { x: 170, y: 210, r: 70 };
-const LEDGER = { x: 400, y: 210, r: 96 };
-const DIFF = { x: 285, y: 120 };
-const JAR = { x: 340, y: 340, w: 120, h: 120 };
-const TAP = { x: 478, y: 448 };
-const COUPLING = { x: 300, y: 300 };
-const SCREW = { x: 640, top: 130, bottom: 390 };
-const PIN = { x: 640, y: 104 };
-const VALVE = { x: 640, y: 470 };
-const BELL = { x: 400, y: 52 };
-const DANGLE = { x: COUPLING.x - 30, y: COUPLING.y + 60 };
+const DANGLE = { x: EN.COUPLING.x - 30, y: EN.COUPLING.y + 60 };
 
-const engineSlots: SlotDef[] = [
-  { id: 'housing', kind: 'plate', accepts: 'engine_plate', x: 400, y: 280, r: 0, rect: [40, 40, 720, 480] },
-  ...fastenersAround('housing', 'screw', [[70, 70], [730, 70], [70, 490], [730, 490]], 0.9),
-  {
-    id: 'jar', kind: 'part', accepts: 'jar', x: JAR.x + JAR.w / 2, y: JAR.y + JAR.h / 2, r: 60, plate: 'housing',
-    onRemove: (c, it) => { it.fill = room(c.state, c.room, R.pbFill); },
-    onInstall: (c, it) => c.send(Cmd.JarFill, c.room, it.fill ?? 0),
+export const engineDef: PanelDef = {
+  front: { rect: [30, 20, 740, 520], size: [1.7, 1.2] },
+  sync: noSync, // the world derives engine flags from the parts (see world.ts)
+  onRemove(c, slot, item) {
+    if (!onSite(c)) return;
+    if (slot === 'jar') {
+      const butter = item.parts?.butter?.item;
+      if (butter) butter.fill = room(c.state, c.room, R.pbFill);
+    }
+    if (slot === 'valve') item.open = room(c.state, c.room, R.valve);
   },
-  { id: 'pin', kind: 'part', accepts: 'pin', x: PIN.x, y: PIN.y, r: 18, plate: 'housing' },
-];
-
-export const engineDef: MachineDef = {
-  slots: engineSlots,
-  initial: () => fitted(engineSlots, { jar: one('jar', { fill: 1 }) }),
-  sync(c) {
-    c.send(Cmd.JarPresent, c.room, c.has('jar') ? 1 : 0);
-    c.send(Cmd.Linkage, c.room, c.has('pin') ? 1 : 0);
+  onInstall(c, slot, item) {
+    if (!onSite(c)) return;
+    if (slot === 'jar') c.send(Cmd.JarFill, c.room, item.parts?.butter?.item?.fill ?? 0);
+    if (slot === 'valve') c.send(Cmd.ValveSet, c.room, item.open ?? 0.3);
   },
   controls: [
     {
-      id: 'drum', kind: 'hold', r: LEDGER.r, plate: 'housing', pos: () => [LEDGER.x, LEDGER.y],
+      id: 'drum', kind: 'hold', r: EN.LEDGER.r, behind: 'housing', pos: () => [EN.LEDGER.x, EN.LEDGER.y],
+      enabled: (c) => onSite(c) && c.has('ledger'),
       onHold: (c, on) => c.send(Cmd.Hold, c.room, on ? 1 : 0),
     },
     {
-      id: 'tap', kind: 'drag', r: 24, plate: 'housing', pos: () => [TAP.x, TAP.y - 14],
-      enabled: (c) => c.has('jar'),
+      id: 'tap', kind: 'drag', r: 24, behind: 'housing', pos: () => [EN.TAP.x, EN.TAP.y - 14],
+      enabled: (c) => onSite(c) && c.has('jar'),
       onDrag: (c, _dx, dy) => {
         if (Math.abs(dy) < 24) return false;
-        c.send(Cmd.Drain, c.room, dy > 0 ? 1 : 0); // turn the handle down to open
+        c.send(Cmd.Drain, c.room, dy > 0 ? 1 : 0);
         return true;
       },
     },
     {
-      id: 'coupling', kind: 'drag', r: 26, plate: 'housing',
-      pos: (c) => (room(c.state, c.room, R.supply) > 0.5 ? [COUPLING.x, COUPLING.y] : [DANGLE.x, DANGLE.y]),
+      id: 'coupling', kind: 'drag', r: 26, behind: 'housing',
+      enabled: onSite,
+      pos: (c) => (sim(c, R.supply, 1) > 0.5 ? [EN.COUPLING.x, EN.COUPLING.y] : [DANGLE.x, DANGLE.y]),
       onDrag: (c, dx, dy) => {
         const connected = room(c.state, c.room, R.supply) > 0.5;
         if (connected && Math.hypot(dx, dy) > 45) { c.send(Cmd.Supply, c.room, 0); return true; }
-        // Reconnect: drag the loose end back up to the collar.
-        if (!connected && Math.hypot(DANGLE.x + dx - COUPLING.x, DANGLE.y + dy - COUPLING.y) < 22) { c.send(Cmd.Supply, c.room, 1); return true; }
+        if (!connected && Math.hypot(DANGLE.x + dx - EN.COUPLING.x, DANGLE.y + dy - EN.COUPLING.y) < 22) { c.send(Cmd.Supply, c.room, 1); return true; }
         return false;
       },
     },
   ],
 
   drawInterior(g, c) {
-    const st = c.state, i = c.room, v = c.vis;
-    const dt = c.dt;
+    const v = c.vis;
     const visScale = Math.min(c.timeScale, 6);
-    const omega = room(st, i, R.ledgerOmega);
-    const linked = c.has('pin');
-    const valve = room(st, i, R.valve);
-    v.ledger = (v.ledger ?? 0) + omega * visScale * dt;
-    v.ref = (v.ref ?? 0) + visScale * dt;
-    const atStop = (valve <= 0.0005 && omega < 1) || (valve >= 0.9995 && omega > 1);
-    if (linked && !atStop) v.screw = (v.screw ?? 0) + (omega - 1) * 0.5 * visScale * dt * 6;
-    v.coolant = (v.coolant ?? 0) + room(st, i, R.flow) * 1000 * 160 * dt;
-    v.supply = (v.supply ?? 0) + dt * 0.6;
-    v.bell = Math.max(0, (v.bell ?? 0) - dt * 0.9);
-    const chimes = room(st, i, R.chimes);
+    const has = c.has;
+    const omega = sim(c, R.ledgerOmega);
+    const refOmega = has('ref') && has('escapement') && onSite(c) ? 1 : 0;
+    const valve = sim(c, R.valve, c.item('valve')?.open ?? 0.3);
+    const linked = has('pin') && has('screw') && has('diff');
+    v.ledger = (v.ledger ?? 0) + omega * visScale * c.dt;
+    v.ref = (v.ref ?? 0) + refOmega * visScale * c.dt;
+    const atStop = (valve <= 0.0005 && omega < refOmega) || (valve >= 0.9995 && omega > refOmega);
+    if (linked && !atStop) v.screw = (v.screw ?? 0) + (omega - refOmega) * 0.5 * visScale * c.dt * 6;
+    v.coolant = (v.coolant ?? 0) + sim(c, R.flow) * 1000 * 160 * c.dt;
+    v.supply = (v.supply ?? 0) + c.dt * 0.6;
+    v.bell = Math.max(0, (v.bell ?? 0) - c.dt * 0.9);
+    const chimes = sim(c, R.chimes);
     if (v.lastChimes !== undefined && chimes > v.lastChimes) v.bell = 1;
     v.lastChimes = chimes;
 
-    background(g);
+    background(g, c);
+    // chassis
+    g.beginPath(); g.roundRect(50, 50, 700, 460, 16); inked(g, '#5a4326', 4);
+    g.beginPath(); g.roundRect(64, 64, 672, 432, 10); g.fillStyle = '#2b2116'; g.fill();
 
-    // coolant pipe through the valve
-    pipe(g, [[520, VALVE.y + 18], [PW, VALVE.y + 18]], tempColor(st[H.coolantTemp]).getStyle());
-    flowDots(g, 520, VALVE.y + 18, PW, VALVE.y + 18, v.coolant, 9);
-
-    // shafts and gear train
-    const shaft = (pts: [number, number][]) => {
-      g.lineWidth = 7; g.strokeStyle = INK; g.beginPath(); pts.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
-      g.lineWidth = 3; g.strokeStyle = '#8c8c8c'; g.stroke();
-    };
-    shaft([[LEDGER.x, LEDGER.y], [LEDGER.x, JAR.y + 20]]);
-    shaft([[REF.x, REF.y], [DIFF.x, DIFF.y], [LEDGER.x, LEDGER.y]]);
-    shaft([[DIFF.x, DIFF.y], [DIFF.x, 90], [PIN.x, 90], [PIN.x, PIN.y]]);
-
-    gear(g, REF.x, REF.y, REF.r, 24, v.ref, '#c99a45');
-    // escapement
-    g.save(); g.translate(REF.x, REF.y - REF.r - 26); g.rotate(Math.sin(v.ref * 8) * 0.28);
-    g.strokeStyle = INK; g.lineWidth = 6; g.beginPath(); g.moveTo(-26, 18); g.lineTo(0, 0); g.lineTo(26, 18); g.stroke();
-    g.strokeStyle = '#d0a85a'; g.lineWidth = 3; g.stroke();
-    g.restore();
-    ledgerDrum(g, v.ledger, c.active?.id === 'drum');
-    gear(g, DIFF.x, DIFF.y, 22, 10, (v.ledger - v.ref) / 2, '#b0b0b0');
-    gear(g, DIFF.x - 18, DIFF.y + 18, 12, 8, -v.ref * 1.8, '#9c9c9c');
-    gear(g, DIFF.x + 18, DIFF.y + 18, 12, 8, -v.ledger * 1.8, '#9c9c9c');
-
-    const hasJar = c.has('jar');
-    if (hasJar) jar(g, room(st, i, R.pbFill), room(st, i, R.pbTemp), v.ledger);
-    else {
-      socket(g, JAR.x + JAR.w / 2, JAR.y + JAR.h / 2, 58);
-      // bare paddle spinning in air
-      const span = Math.abs(Math.cos(v.ledger)) * 46 + 4;
-      g.fillStyle = '#8f8f8f'; g.fillRect(LEDGER.x - span, JAR.y + 76, span * 2, 22); g.strokeStyle = INK; g.lineWidth = 2; g.strokeRect(LEDGER.x - span, JAR.y + 76, span * 2, 22);
+    // the site's coolant pipe runs through, if the engine stands on one
+    if (onSite(c)) {
+      pipe(g, [[520, EN.VALVE.y + 18], [PW - 10, EN.VALVE.y + 18]], tempColor(c.state[H.coolantTemp]).getStyle());
+      if (has('valve')) flowDots(g, 520, EN.VALVE.y + 18, PW - 10, EN.VALVE.y + 18, v.coolant, 9);
     }
-    supplyTube(g, c, room(st, i, R.supply) > 0.5, hasJar ? room(st, i, R.pbFill) : 1, hasJar);
-    if (hasJar) tap(g, c, room(st, i, R.drain) > 0.5, room(st, i, R.pbFill));
-    leadScrew(g, v.screw ?? 0, valve, linked);
-    valveBody(g, valve);
+
+    // shafts, only between parts that are there
+    if (has('ledger') && has('jar')) shaft(g, [[EN.LEDGER.x, EN.LEDGER.y], [EN.LEDGER.x, EN.JAR.y + 20]]);
+    if (has('diff')) {
+      if (has('ref')) shaft(g, [[EN.REF.x, EN.REF.y], [EN.DIFF.x, EN.DIFF.y]]);
+      if (has('ledger')) shaft(g, [[EN.DIFF.x, EN.DIFF.y], [EN.LEDGER.x, EN.LEDGER.y]]);
+      if (has('pin')) shaft(g, [[EN.DIFF.x, EN.DIFF.y], [EN.DIFF.x, 90], [EN.PIN.x, 90], [EN.PIN.x, EN.PIN.y]]);
+    }
+    if (has('motor') && has('ledger')) shaft(g, [[EN.MOTOR.x, EN.MOTOR.y], [EN.LEDGER.x, EN.LEDGER.y]]);
+
+    if (has('ref')) gear(g, EN.REF.x, EN.REF.y, EN.REF.r, 24, v.ref, '#c99a45'); else socket(g, EN.REF.x, EN.REF.y, 62);
+    if (has('escapement')) {
+      g.save(); g.translate(EN.REF.x, EN.REF.y - EN.REF.r - 26); g.rotate(Math.sin(v.ref * 8) * 0.28);
+      g.strokeStyle = INK; g.lineWidth = 6; g.beginPath(); g.moveTo(-26, 18); g.lineTo(0, 0); g.lineTo(26, 18); g.stroke();
+      g.strokeStyle = '#d0a85a'; g.lineWidth = 3; g.stroke();
+      g.restore();
+    } else socket(g, EN.REF.x, EN.REF.y - EN.REF.r - 18, 18);
+    if (has('ledger')) ledgerDrum(g, v.ledger, c.active?.id === 'drum'); else socket(g, EN.LEDGER.x, EN.LEDGER.y, 86);
+    if (has('diff')) {
+      gear(g, EN.DIFF.x, EN.DIFF.y, 22, 10, (v.ledger - v.ref) / 2, '#b0b0b0');
+      gear(g, EN.DIFF.x - 18, EN.DIFF.y + 18, 12, 8, -v.ref * 1.8, '#9c9c9c');
+      gear(g, EN.DIFF.x + 18, EN.DIFF.y + 18, 12, 8, -v.ledger * 1.8, '#9c9c9c');
+    } else socket(g, EN.DIFF.x, EN.DIFF.y + 6, 26);
+    if (has('motor')) {
+      g.beginPath(); g.roundRect(EN.MOTOR.x - 28, EN.MOTOR.y - 20, 56, 40, 6); inked(g, '#5a6a3a');
+      g.strokeStyle = INK; g.lineWidth = 2; g.beginPath(); for (let k = 0; k < 5; k++) g.arc(EN.MOTOR.x - 16 + k * 8, EN.MOTOR.y, 5, 0, Math.PI); g.stroke();
+    } else socket(g, EN.MOTOR.x, EN.MOTOR.y, 26);
+
+    const jarItem = c.item('jar');
+    if (jarItem) jar(g, jarItem, sim(c, R.pbFill, jarItem.parts?.butter?.item?.fill ?? 0), sim(c, R.pbTemp, 22), v.ledger);
+    else {
+      socket(g, EN.JAR.x + EN.JAR.w / 2, EN.JAR.y + EN.JAR.h / 2, 58);
+      if (has('ledger')) {
+        const span = Math.abs(Math.cos(v.ledger)) * 46 + 4;
+        g.fillStyle = '#8f8f8f'; g.fillRect(EN.LEDGER.x - span, EN.JAR.y + 76, span * 2, 22);
+        g.strokeStyle = INK; g.lineWidth = 2; g.strokeRect(EN.LEDGER.x - span, EN.JAR.y + 76, span * 2, 22);
+      }
+    }
+    if (onSite(c)) supplyTube(g, c, sim(c, R.supply, 1) > 0.5, jarItem ? sim(c, R.pbFill) : 1, !!jarItem);
+    if (jarItem && onSite(c)) tap(g, c, sim(c, R.drain) > 0.5, sim(c, R.pbFill));
+    if (has('screw')) leadScrew(g, v.screw ?? 0, valve, has('pin')); else socket(g, EN.SCREW.x, 260, 30);
+    if (!has('pin')) { g.fillStyle = INK; g.beginPath(); g.arc(EN.PIN.x, EN.PIN.y, 5, 0, Math.PI * 2); g.fill(); }
+    if (has('valve')) valveBody(g, valve); else socket(g, EN.VALVE.x, EN.VALVE.y + 14, 32);
     // bell
     const swing = Math.sin(v.bell * 24) * v.bell * 0.5;
-    g.save(); g.translate(BELL.x, BELL.y - 30); g.rotate(swing);
+    g.save(); g.translate(EN.BELL.x, EN.BELL.y - 30); g.rotate(swing);
     g.beginPath(); g.moveTo(-22, 46); g.quadraticCurveTo(-22, 8, 0, 6); g.quadraticCurveTo(22, 8, 22, 46); g.closePath(); inked(g, '#e0b04a', 4);
     g.beginPath(); g.arc(0, 48 + swing * 10, 5, 0, Math.PI * 2); g.fillStyle = INK; g.fill();
     g.restore();
@@ -238,13 +231,13 @@ export const engineDef: MachineDef = {
     g.fillStyle = brass; g.fill(); g.strokeStyle = INK; g.lineWidth = 6; g.stroke();
     g.fillStyle = '#7a5520';
     for (let x = 110; x < 700; x += 40) { g.beginPath(); g.arc(x, 56, 3, 0, Math.PI * 2); g.fill(); g.beginPath(); g.arc(x, 504, 3, 0, Math.PI * 2); g.fill(); }
-    // porthole onto the ledger drum
+    // porthole onto the ledger drum (or onto nothing)
     g.save();
-    g.beginPath(); g.arc(LEDGER.x, LEDGER.y, 70, 0, Math.PI * 2); g.clip();
-    g.fillStyle = '#2b2116'; g.fillRect(LEDGER.x - 70, LEDGER.y - 70, 140, 140);
-    ledgerDrum(g, c.vis.ledger ?? 0, false);
+    g.beginPath(); g.arc(EN.LEDGER.x, EN.LEDGER.y, 70, 0, Math.PI * 2); g.clip();
+    g.fillStyle = '#2b2116'; g.fillRect(EN.LEDGER.x - 70, EN.LEDGER.y - 70, 140, 140);
+    if (c.has('ledger')) ledgerDrum(g, c.vis.ledger ?? 0, false);
     g.restore();
-    g.beginPath(); g.arc(LEDGER.x, LEDGER.y, 70, 0, Math.PI * 2); g.strokeStyle = INK; g.lineWidth = 10; g.stroke();
+    g.beginPath(); g.arc(EN.LEDGER.x, EN.LEDGER.y, 70, 0, Math.PI * 2); g.strokeStyle = INK; g.lineWidth = 10; g.stroke();
     g.strokeStyle = '#e9d9a8'; g.lineWidth = 3; g.stroke();
     g.strokeStyle = '#8f6526'; g.lineWidth = 8;
     g.beginPath(); g.moveTo(370, 400); g.lineTo(430, 400); g.moveTo(400, 400); g.lineTo(400, 440); g.stroke();
@@ -252,23 +245,25 @@ export const engineDef: MachineDef = {
 };
 
 function ledgerDrum(g: CanvasRenderingContext2D, a: number, holding: boolean): void {
-  gear(g, LEDGER.x, LEDGER.y, LEDGER.r, 36, a, '#d9ad55');
-  g.save(); g.translate(LEDGER.x, LEDGER.y); g.rotate(a);
-  g.beginPath(); g.arc(0, 0, LEDGER.r * 0.62, 0, Math.PI * 2); inked(g, '#efe3c4');
+  gear(g, EN.LEDGER.x, EN.LEDGER.y, EN.LEDGER.r, 36, a, '#d9ad55');
+  g.save(); g.translate(EN.LEDGER.x, EN.LEDGER.y); g.rotate(a);
+  g.beginPath(); g.arc(0, 0, EN.LEDGER.r * 0.62, 0, Math.PI * 2); inked(g, '#efe3c4');
   g.fillStyle = INK; g.font = 'bold 15px Georgia, serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   for (let k = 0; k < 20; k++) {
-    g.save(); g.rotate((k / 20) * Math.PI * 2); g.translate(0, -LEDGER.r * 0.48); g.fillText(String((k * 7) % 10), 0, 0); g.restore();
+    g.save(); g.rotate((k / 20) * Math.PI * 2); g.translate(0, -EN.LEDGER.r * 0.48); g.fillText(String((k * 7) % 10), 0, 0); g.restore();
   }
   g.beginPath(); g.arc(0, 0, 12, 0, Math.PI * 2); inked(g, '#3a2f22');
   g.restore();
   if (holding) {
     g.strokeStyle = '#e76f5199'; g.lineWidth = 6;
-    g.beginPath(); g.arc(LEDGER.x, LEDGER.y, LEDGER.r + 10, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(EN.LEDGER.x, EN.LEDGER.y, EN.LEDGER.r + 10, 0, Math.PI * 2); g.stroke();
   }
 }
 
-function jar(g: CanvasRenderingContext2D, fill: number, pbTemp: number, paddle: number): void {
-  const { x, y, w, h } = JAR;
+function jar(g: CanvasRenderingContext2D, item: Item, fill: number, pbTemp: number, paddle: number): void {
+  const { x, y, w, h } = EN.JAR;
+  const butter = item.parts?.butter?.item;
+  const f = butter ? fill : 0;
   g.fillStyle = '#a77d36'; g.strokeStyle = INK; g.lineWidth = 2;
   for (let k = 0; k < 6; k++) {
     g.fillRect(x - 18, y + 14 + k * 17, 18, 8); g.strokeRect(x - 18, y + 14 + k * 17, 18, 8);
@@ -276,38 +271,37 @@ function jar(g: CanvasRenderingContext2D, fill: number, pbTemp: number, paddle: 
   }
   g.beginPath(); g.roundRect(x, y, w, h, 10); g.fillStyle = '#cfe3e04d'; g.fill();
   const warm = Math.max(0, Math.min(1, (pbTemp - 14) / 20)); // thinner and paler when warm
-  const lvl = (h - 12) * fill;
+  const lvl = (h - 12) * f;
   g.fillStyle = `rgb(${Math.round(150 + 40 * warm)},${Math.round(98 + 34 * warm)},${Math.round(40 + 22 * warm)})`;
   g.beginPath(); g.roundRect(x + 6, y + h - 6 - lvl, w - 12, lvl, 6); g.fill();
   const span = Math.abs(Math.cos(paddle)) * (w / 2 - 14) + 4;
   g.fillStyle = '#8f8f8f'; g.lineWidth = 2;
   g.fillRect(x + w / 2 - span, y + h - 44, span * 2, 22); g.strokeRect(x + w / 2 - span, y + h - 44, span * 2, 22);
   g.beginPath(); g.roundRect(x, y, w, h, 10); g.strokeStyle = INK; g.lineWidth = 4; g.stroke();
-  g.fillStyle = '#b8893a'; g.fillRect(x - 6, y - 10, w + 12, 16); g.strokeRect(x - 6, y - 10, w + 12, 16);
+  if (item.parts?.lid?.item) { g.fillStyle = '#b8893a'; g.fillRect(x - 6, y - 10, w + 12, 16); g.strokeRect(x - 6, y - 10, w + 12, 16); }
   g.fillStyle = '#ffffff55'; g.fillRect(x + 10, y + 10, 8, h - 30);
 }
 
 function supplyTube(g: CanvasRenderingContext2D, c: Ctx, connected: boolean, fill: number, hasJar: boolean): void {
   const v = c.vis;
   const a = c.active?.id === 'coupling' ? c.active : null;
-  const lid = { x: JAR.x + 20, y: JAR.y - 10 };
+  const lid = { x: EN.JAR.x + 20, y: EN.JAR.y - 10 };
   const end = connected ? lid : { x: DANGLE.x + (a?.dx ?? 0), y: DANGLE.y + (a?.dy ?? 0) };
-  const collar = connected && a ? { x: COUPLING.x + a.dx * 0.3, y: COUPLING.y + a.dy * 0.3 } : COUPLING;
+  const collar = connected && a ? { x: EN.COUPLING.x + a.dx * 0.3, y: EN.COUPLING.y + a.dy * 0.3 } : EN.COUPLING;
   for (const [stroke, w] of [[INK, 16], ['#c2a06a', 10]] as const) {
     g.strokeStyle = stroke; g.lineWidth = w;
-    g.beginPath(); g.moveTo(0, 330); g.bezierCurveTo(140, 330, 200, 270, collar.x, collar.y);
+    g.beginPath(); g.moveTo(64, 330); g.bezierCurveTo(160, 330, 200, 270, collar.x, collar.y);
     if (connected) g.quadraticCurveTo(lid.x, collar.y, lid.x, lid.y);
     else g.quadraticCurveTo(collar.x + 6, collar.y + 40, end.x, end.y);
     g.stroke();
   }
   if (!connected || !hasJar) {
-    // dripping peanut butter (onto the floor, if there's no jar)
     const dx = connected ? lid.x : end.x, dy = connected ? lid.y : end.y;
     g.fillStyle = '#a8732f'; g.beginPath(); g.arc(dx, dy + 8, 5 + Math.sin((v.supply ?? 0) * 3), 0, Math.PI * 2); g.fill();
   } else if (fill < 0.999) {
     const t = (v.supply ?? 0) % 1;
-    const px = t < 0.7 ? (t / 0.7) * COUPLING.x : COUPLING.x + ((t - 0.7) / 0.3) * (lid.x - COUPLING.x);
-    const py = t < 0.7 ? 330 - (t / 0.7) * 30 : COUPLING.y + ((t - 0.7) / 0.3) * (lid.y - COUPLING.y);
+    const px = t < 0.7 ? 64 + (t / 0.7) * (EN.COUPLING.x - 64) : EN.COUPLING.x + ((t - 0.7) / 0.3) * (lid.x - EN.COUPLING.x);
+    const py = t < 0.7 ? 330 - (t / 0.7) * 30 : EN.COUPLING.y + ((t - 0.7) / 0.3) * (lid.y - EN.COUPLING.y);
     g.fillStyle = '#a8732f'; g.beginPath(); g.arc(px, py, 5, 0, Math.PI * 2); g.fill();
   }
   g.beginPath(); g.roundRect(collar.x - 14, collar.y - 10, 28, 20, 4); inked(g, '#b8893a');
@@ -316,27 +310,20 @@ function supplyTube(g: CanvasRenderingContext2D, c: Ctx, connected: boolean, fil
 function tap(g: CanvasRenderingContext2D, c: Ctx, open: boolean, fill: number): void {
   const v = c.vis;
   const a = c.active?.id === 'tap' ? c.active : null;
-  g.beginPath(); g.roundRect(JAR.x + JAR.w - 4, TAP.y - 6, 30, 12, 3); inked(g, '#b8893a');
+  g.beginPath(); g.roundRect(EN.JAR.x + EN.JAR.w - 4, EN.TAP.y - 6, 30, 12, 3); inked(g, '#b8893a');
   const turn = (open ? Math.PI / 2 : 0) + (a ? Math.max(-0.6, Math.min(0.6, a.dy / 50)) : 0);
-  g.save(); g.translate(TAP.x, TAP.y - 14); g.rotate(turn);
+  g.save(); g.translate(EN.TAP.x, EN.TAP.y - 14); g.rotate(turn);
   g.beginPath(); g.roundRect(-16, -4, 32, 8, 4); inked(g, '#a33b2c');
   g.restore();
-  // drips and a growing puddle (purely visual; the sim tracks the jar level)
-  if (open && fill > 0.001) v.drip = ((v.drip ?? 0) + c.dt * 3) % 1;
   if (open && fill > 0.001) {
+    v.drip = ((v.drip ?? 0) + c.dt * 3) % 1;
     g.fillStyle = '#a8732f';
-    const yy = TAP.y + 8 + (v.drip ?? 0) * (PH - 40 - TAP.y);
-    g.beginPath(); g.ellipse(TAP.x + 10, yy, 3.5, 5, 0, 0, Math.PI * 2); g.fill();
-    v.puddle = Math.min(1, (v.puddle ?? 0) + c.dt * 0.02);
-  }
-  if ((v.puddle ?? 0) > 0) {
-    g.beginPath(); g.ellipse(TAP.x + 10, PH - 26, 10 + 60 * v.puddle, 4 + 7 * v.puddle, 0, 0, Math.PI * 2);
-    g.fillStyle = '#8d5f27'; g.fill();
+    g.beginPath(); g.ellipse(EN.TAP.x + 10, EN.TAP.y + 8 + v.drip * 40, 3.5, 5, 0, 0, Math.PI * 2); g.fill();
   }
 }
 
 function leadScrew(g: CanvasRenderingContext2D, screwAngle: number, valve: number, linked: boolean): void {
-  const { x, top, bottom } = SCREW;
+  const { x, top, bottom } = EN.SCREW;
   g.fillStyle = '#9a9a9a'; g.strokeStyle = INK; g.lineWidth = 3;
   g.fillRect(x - 9, top, 18, bottom - top + 60); g.strokeRect(x - 9, top, 18, bottom - top + 60);
   g.strokeStyle = '#5a5a5a'; g.lineWidth = 2;
@@ -345,13 +332,12 @@ function leadScrew(g: CanvasRenderingContext2D, screwAngle: number, valve: numbe
   const ny = top + 20 + (1 - valve) * (bottom - top - 40);
   g.beginPath(); g.roundRect(x - 26, ny - 14, 52, 28, 4); inked(g, '#c99a45');
   g.fillStyle = '#5a4326'; g.fillRect(x + 34, top, 8, bottom - top + 40); g.strokeRect(x + 34, top, 8, bottom - top + 40);
-  g.beginPath(); g.roundRect(x - 18, PIN.y - 10, 36, 20, 4); inked(g, '#7d7d7d');
-  if (linked) { g.beginPath(); g.arc(x, PIN.y, 7, 0, Math.PI * 2); inked(g, '#e9c46a'); }
-  else { g.fillStyle = INK; g.beginPath(); g.arc(x, PIN.y, 5, 0, Math.PI * 2); g.fill(); }
+  g.beginPath(); g.roundRect(x - 18, EN.PIN.y - 10, 36, 20, 4); inked(g, '#7d7d7d');
+  if (linked) { g.beginPath(); g.arc(x, EN.PIN.y, 7, 0, Math.PI * 2); inked(g, '#e9c46a'); }
 }
 
 function valveBody(g: CanvasRenderingContext2D, valve: number): void {
-  const { x, y } = VALVE;
+  const { x, y } = EN.VALVE;
   g.fillStyle = '#b5b5b5'; g.strokeStyle = INK; g.lineWidth = 3;
   g.fillRect(x - 5, y - 40, 10, 30); g.strokeRect(x - 5, y - 40, 10, 30);
   g.beginPath(); g.roundRect(x - 34, y - 12, 68, 60, 10); inked(g, '#7a8c96');
@@ -360,57 +346,48 @@ function valveBody(g: CanvasRenderingContext2D, valve: number): void {
 }
 
 // ======================================================================
-// Server rack: eight bays, six blades from the factory. Each blade is heat.
+// Server rack
 // ======================================================================
-const RACK = { x: 250, y: 30, w: 300, h: 500 };
-const BAYS = Array.from({ length: 8 }, (_, k) => ({ x: 400, y: 86 + k * 56 }));
+const RACK_LEVER = { x: 640, top: 230, bottom: 330 };
 
-const rackSlots: SlotDef[] = [
-  { id: 'door', kind: 'plate', accepts: 'rack_door', x: 400, y: 280, r: 0, rect: [RACK.x, RACK.y, RACK.w, RACK.h] },
-  ...fastenersAround('door', 'screw', [[RACK.x + RACK.w - 22, 70], [RACK.x + RACK.w - 22, 490]], 0.6),
-  ...BAYS.map((b, k): SlotDef => ({ id: `bay${k}`, kind: 'part', accepts: 'blade', x: b.x, y: b.y, r: 26, plate: 'door' })),
-];
-
-export const rackDef: MachineDef = {
-  slots: rackSlots,
-  initial: () => fitted(rackSlots, { bay6: null, bay7: null }),
-  sync(c) {
-    c.send(Cmd.Blades, c.room, BAYS.filter((_, k) => c.has(`bay${k}`)).length);
-  },
+export const rackDef: PanelDef = {
+  front: { rect: [236, 8, 448, 532], size: [1.15, 1.37] },
+  sync: noSync,
   controls: [
     {
-      id: 'power', kind: 'drag', r: 60, pos: () => [650, 280],
-      onDrag: leverDrag((c, on) => c.send(Cmd.Rack, c.room, on ? 1 : 0)),
+      id: 'power', kind: 'lever', r: 50, pos: () => [RACK_LEVER.x, 280],
+      track: { top: RACK_LEVER.top, bottom: RACK_LEVER.bottom },
     },
   ],
   drawInterior(g, c) {
-    const st = c.state, i = c.room;
-    const on = room(st, i, R.rackOn) > 0.5;
-    const temp = room(st, i, R.temp);
+    const temp = c.room >= 0 ? room(c.state, c.room, R.temp) : 22;
+    const on = !!c.switches.power;
     c.vis.t = (c.vis.t ?? 0) + c.dt;
-    background(g, '#2c2a26', '#16140f');
-    // heat haze above the cabinet, coloured by room temperature
-    g.strokeStyle = tempColor(temp).getStyle(); g.lineWidth = 3; g.globalAlpha = 0.5;
-    for (let k = 0; k < 5; k++) {
-      g.beginPath();
-      for (let yy = 0; yy < 26; yy += 2) g.lineTo(300 + k * 50 + Math.sin(yy * 0.4 + c.vis.t * 4 + k) * 4, 26 - yy);
-      g.stroke();
+    background(g, c, '#2c2a26', '#16140f');
+    if (!c.world) {
+      g.strokeStyle = tempColor(temp).getStyle(); g.lineWidth = 3; g.globalAlpha = 0.5;
+      for (let k = 0; k < 5; k++) {
+        g.beginPath();
+        for (let yy = 0; yy < 26; yy += 2) g.lineTo(300 + k * 50 + Math.sin(yy * 0.4 + c.vis.t * 4 + k) * 4, 26 - yy);
+        g.stroke();
+      }
+      g.globalAlpha = 1;
     }
-    g.globalAlpha = 1;
     g.beginPath(); g.roundRect(RACK.x, RACK.y, RACK.w, RACK.h, 8); inked(g, '#232529', 5);
-    for (let k = 0; k < BAYS.length; k++) {
-      const b = BAYS[k];
+    RACK.bays.forEach((b, k) => {
       g.fillStyle = '#121316'; g.fillRect(RACK.x + 24, b.y - 22, RACK.w - 48, 44);
       g.strokeStyle = '#3c3f45'; g.lineWidth = 2; g.strokeRect(RACK.x + 24, b.y - 22, RACK.w - 48, 44);
-      if (!c.has(`bay${k}`)) { socket(g, b.x, b.y, 20); continue; }
-      g.beginPath(); g.roundRect(RACK.x + 30, b.y - 18, RACK.w - 60, 36, 3); inked(g, '#4a4e56', 2);
-      g.fillStyle = '#2e7d4f'; g.fillRect(RACK.x + 44, b.y - 10, 130, 20);
+      const blade = c.item(`bay${k}`);
+      if (!blade) { socket(g, b.x, b.y, 20); return; }
+      const alive = works(blade);
+      g.beginPath(); g.roundRect(RACK.x + 30, b.y - 18, RACK.w - 60, 36, 3); inked(g, blade.parts?.lid?.item ? '#4a4e56' : '#2a2c31', 2);
+      if (blade.parts?.board?.item) { g.fillStyle = '#2e7d4f'; g.fillRect(RACK.x + 44, b.y - 10, 130, 20); }
       for (let j = 0; j < 5; j++) {
-        const blink = on && Math.sin(c.vis.t * (3 + j * 1.7) + k * 2.3) > -0.2;
+        const blink = on && alive && Math.sin(c.vis.t * (3 + j * 1.7) + k * 2.3) > -0.2;
         g.fillStyle = blink ? (temp > 30 ? '#ff5a3c' : '#7dff8a') : '#1d3a22';
         g.fillRect(RACK.x + 190 + j * 12, b.y - 4, 7, 7);
       }
-    }
+    });
   },
   drawPlate(g) {
     g.beginPath(); g.roundRect(RACK.x, RACK.y, RACK.w, RACK.h, 8); inked(g, '#3c3f45', 5);
@@ -421,55 +398,53 @@ export const rackDef: MachineDef = {
     g.beginPath(); g.roundRect(RACK.x + RACK.w - 30, 250, 12, 60, 4); inked(g, '#9aa3a8', 2);
   },
   drawExterior(g, c) {
-    lever(g, 650, 280, room(c.state, c.room, R.rackOn) > 0.5, c.active?.id === 'power' ? c.active.dy : 0);
+    lever(g, c, 'power', RACK_LEVER.x, RACK_LEVER.top, RACK_LEVER.bottom);
   },
 };
 
 // ======================================================================
-// Pump: motor, volute and impeller. The cover is bolted (wrench).
+// Pump
 // ======================================================================
-const VOL = { x: 540, y: 280, r: 130 };
-const pumpSlots: SlotDef[] = [
-  { id: 'cover', kind: 'plate', accepts: 'pump_cover', x: VOL.x, y: VOL.y, r: 0, rect: [VOL.x - 125, VOL.y - 125, 250, 250] },
-  ...fastenersAround('cover', 'bolt', [0, 1, 2, 3].map((k): [number, number] => {
-    const a = Math.PI / 4 + (k * Math.PI) / 2;
-    return [VOL.x + Math.cos(a) * 100, VOL.y + Math.sin(a) * 100];
-  }), 1.2, 'wrench'),
-  { id: 'impeller', kind: 'part', accepts: 'impeller', x: VOL.x, y: VOL.y, r: 80, plate: 'cover' },
-];
+const V = PUMP.VOL;
+const PUMP_LEVER = { x: 150, top: 420, bottom: 500 };
 
-export const pumpDef: MachineDef = {
-  slots: pumpSlots,
-  initial: () => fitted(pumpSlots, {}),
-  sync(c) { c.send(Cmd.Impeller, 0, c.has('impeller') ? 1 : 0); },
+export const pumpDef: PanelDef = {
+  front: { rect: [70, 130, 620, 400], size: [1.6, 1.03] },
+  sync: noSync,
   controls: [
     {
-      id: 'power', kind: 'drag', r: 60, pos: () => [160, 450],
-      onDrag: leverDrag((c, on) => c.send(Cmd.Pump, 0, on ? 1 : 0)),
+      id: 'power', kind: 'lever', r: 50, pos: () => [PUMP_LEVER.x, (PUMP_LEVER.top + PUMP_LEVER.bottom) / 2],
+      track: { top: PUMP_LEVER.top, bottom: PUMP_LEVER.bottom },
     },
   ],
   drawInterior(g, c) {
     const st = c.state;
-    const on = (st[H.flags] & F.pumpOn) !== 0;
-    const flow = totalFlow(st);
-    c.vis.spin = (c.vis.spin ?? 0) + (on ? 1 : 0) * c.dt * 9;
+    const motor = c.item('motor');
+    const spinning = !!c.switches.power && works(motor);
+    const flow = c.room >= 0 ? totalFlow(st) : 0;
+    c.vis.spin = (c.vis.spin ?? 0) + (spinning ? 1 : 0) * c.dt * 9;
     c.vis.flow = (c.vis.flow ?? 0) + flow * 1000 * 120 * c.dt;
-    background(g, '#2e2a24', '#16130e');
+    background(g, c, '#2e2a24', '#16130e');
     const water = tempColor(st[H.coolantTemp]).getStyle();
-    pipe(g, [[VOL.x, PH], [VOL.x, VOL.y]], water, 40);
-    pipe(g, [[VOL.x + 90, VOL.y - 90], [VOL.x + 90, 0]], water, 40);
-    flowDots(g, VOL.x, PH, VOL.x, VOL.y + 60, c.vis.flow, 6);
-    flowDots(g, VOL.x + 90, VOL.y - 120, VOL.x + 90, 0, c.vis.flow, 6);
-    // motor
-    g.beginPath(); g.roundRect(90, 190, 260, 180, 16); inked(g, '#9c3b2e', 4);
-    g.strokeStyle = INK; g.lineWidth = 3;
-    for (let k = 0; k < 9; k++) { g.beginPath(); g.moveTo(112 + k * 26, 205); g.lineTo(112 + k * 26, 355); g.stroke(); }
-    g.beginPath(); g.rect(350, VOL.y - 14, 70, 28); inked(g, '#8c8c8c');
+    if (c.room >= 0) {
+      pipe(g, [[V.x, PH - 30], [V.x, V.y]], water, 40);
+      pipe(g, [[V.x + 90, V.y - 90], [V.x + 90, 140]], water, 40);
+      flowDots(g, V.x, PH - 30, V.x, V.y + 60, c.vis.flow, 6);
+    }
+    // base plate
+    g.beginPath(); g.roundRect(80, 400, 600, 40, 6); inked(g, '#4a4a4a', 4);
+    if (motor) {
+      g.beginPath(); g.roundRect(90, 190, 260, 180, 16); inked(g, '#9c3b2e', 4);
+      g.strokeStyle = INK; g.lineWidth = 3;
+      for (let k = 0; k < 9; k++) { g.beginPath(); g.moveTo(112 + k * 26, 205); g.lineTo(112 + k * 26, 355); g.stroke(); }
+      if (!motor.parts?.cap?.item) { g.beginPath(); g.arc(PUMP.MOTOR.x, PUMP.MOTOR.y, 60, 0, Math.PI * 2); inked(g, '#2a1a14'); }
+      g.beginPath(); g.rect(350, V.y - 14, 70, 28); inked(g, '#8c8c8c');
+    } else socket(g, PUMP.MOTOR.x, PUMP.MOTOR.y, 90);
     // volute casing
-    g.beginPath(); g.arc(VOL.x, VOL.y, VOL.r, 0, Math.PI * 2); inked(g, '#56656e', 5);
-    g.beginPath(); g.arc(VOL.x, VOL.y, 100, 0, Math.PI * 2); g.fillStyle = water; g.globalAlpha = 0.35; g.fill(); g.globalAlpha = 1;
+    g.beginPath(); g.arc(V.x, V.y, V.r, 0, Math.PI * 2); inked(g, '#56656e', 5);
+    g.beginPath(); g.arc(V.x, V.y, 100, 0, Math.PI * 2); g.fillStyle = water; g.globalAlpha = c.room >= 0 ? 0.35 : 0.08; g.fill(); g.globalAlpha = 1;
     if (c.has('impeller')) {
-      g.save(); g.translate(VOL.x, VOL.y); g.rotate(c.vis.spin);
+      g.save(); g.translate(V.x, V.y); g.rotate(c.vis.spin);
       g.beginPath(); g.arc(0, 0, 78, 0, Math.PI * 2); inked(g, '#b07a3a');
       g.lineWidth = 6;
       for (let k = 0; k < 7; k++) {
@@ -480,56 +455,42 @@ export const pumpDef: MachineDef = {
       g.beginPath(); g.arc(0, 0, 16, 0, Math.PI * 2); inked(g, '#666');
       g.restore();
     } else {
-      socket(g, VOL.x, VOL.y, 78);
-      // the shaft still turns, uselessly
-      g.save(); g.translate(VOL.x, VOL.y); g.rotate(c.vis.spin);
-      g.beginPath(); g.rect(-6, -16, 12, 32); inked(g, '#8c8c8c'); g.restore();
+      socket(g, V.x, V.y, 78);
+      if (motor) { g.save(); g.translate(V.x, V.y); g.rotate(c.vis.spin); g.beginPath(); g.rect(-6, -16, 12, 32); inked(g, '#8c8c8c'); g.restore(); }
     }
   },
   drawPlate(g) {
-    g.beginPath(); g.arc(VOL.x, VOL.y, 122, 0, Math.PI * 2); inked(g, '#7d8f99', 5);
-    g.beginPath(); g.arc(VOL.x, VOL.y, 40, 0, Math.PI * 2); inked(g, '#56656e', 3);
+    g.beginPath(); g.arc(V.x, V.y, 122, 0, Math.PI * 2); inked(g, '#7d8f99', 5);
+    g.beginPath(); g.arc(V.x, V.y, 40, 0, Math.PI * 2); inked(g, '#56656e', 3);
     g.strokeStyle = '#5f707a'; g.lineWidth = 4;
-    g.beginPath(); g.arc(VOL.x, VOL.y, 80, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(V.x, V.y, 80, 0, Math.PI * 2); g.stroke();
   },
   drawExterior(g, c) {
-    lever(g, 160, 450, (c.state[H.flags] & F.pumpOn) !== 0, c.active?.id === 'power' ? c.active.dy : 0);
+    lever(g, c, 'power', PUMP_LEVER.x, PUMP_LEVER.top, PUMP_LEVER.bottom);
   },
 };
 
 // ======================================================================
-// Chiller: two fan mounts (one fitted), a fuse, a compressor and coil.
+// Chiller
 // ======================================================================
-const FANS = [{ x: 250, y: 200 }, { x: 550, y: 200 }];
-const FUSE = { x: 400, y: 320 };
-const chillerSlots: SlotDef[] = [
-  { id: 'grille', kind: 'plate', accepts: 'chiller_grille', x: 400, y: 210, r: 0, rect: [80, 60, 640, 300] },
-  ...fastenersAround('grille', 'screw', [[100, 80], [700, 80], [100, 340], [700, 340]], 0.9),
-  ...FANS.map((f, k): SlotDef => ({ id: `fan${k}`, kind: 'part', accepts: 'fan', x: f.x, y: f.y, r: 90, plate: 'grille' })),
-  { id: 'fuse', kind: 'part', accepts: 'fuse', x: FUSE.x, y: FUSE.y, r: 28, plate: 'grille' },
-];
+const CH_LEVER = { x: 690, top: 410, bottom: 490 };
 
-export const chillerDef: MachineDef = {
-  slots: chillerSlots,
-  initial: () => fitted(chillerSlots, { fan1: null }),
-  sync(c) {
-    c.send(Cmd.Fans, 0, FANS.filter((_, k) => c.has(`fan${k}`)).length);
-    c.send(Cmd.Fuse, 0, c.has('fuse') ? 1 : 0);
-  },
+export const chillerDef: PanelDef = {
+  front: { rect: [50, 30, 700, 500], size: [2.2, 1.57] },
+  sync: noSync,
   controls: [
     {
-      id: 'power', kind: 'drag', r: 60, pos: () => [690, 450],
-      onDrag: leverDrag((c, on) => c.send(Cmd.Chiller, 0, on ? 1 : 0)),
+      id: 'power', kind: 'lever', r: 50, pos: () => [CH_LEVER.x, (CH_LEVER.top + CH_LEVER.bottom) / 2],
+      track: { top: CH_LEVER.top, bottom: CH_LEVER.bottom },
     },
   ],
   drawInterior(g, c) {
-    const st = c.state;
-    const running = (st[H.flags] & F.chillerOn) !== 0 && c.has('fuse');
+    const running = !!c.switches.power && c.has('fuse') && c.has('compressor');
     c.vis.spin = (c.vis.spin ?? 0) + (running ? 1 : 0) * c.dt * 14;
-    background(g, '#2a3036', '#14181b');
+    background(g, c, '#2a3036', '#14181b');
     g.beginPath(); g.roundRect(60, 40, 680, 480, 14); inked(g, '#7f97a6', 5);
     g.beginPath(); g.roundRect(80, 60, 640, 300, 8); g.fillStyle = '#26323a'; g.fill();
-    FANS.forEach((f, k) => {
+    CHILLER.FANS.forEach((f, k) => {
       if (!c.has(`fan${k}`)) { socket(g, f.x, f.y, 88); return; }
       g.beginPath(); g.arc(f.x, f.y, 92, 0, Math.PI * 2); inked(g, '#3d4c56');
       g.save(); g.translate(f.x, f.y); g.rotate(c.vis.spin + k);
@@ -541,16 +502,17 @@ export const chillerDef: MachineDef = {
       g.beginPath(); g.arc(0, 0, 14, 0, Math.PI * 2); inked(g, '#56656e');
       g.restore();
     });
-    // fuse clips
-    g.beginPath(); g.roundRect(FUSE.x - 46, FUSE.y - 18, 92, 36, 6); inked(g, '#1c1c1c');
-    g.fillStyle = '#c9c9c9'; g.fillRect(FUSE.x - 40, FUSE.y - 12, 12, 24); g.fillRect(FUSE.x + 28, FUSE.y - 12, 12, 24);
+    const F = CHILLER.FUSE;
+    g.beginPath(); g.roundRect(F.x - 46, F.y - 18, 92, 36, 6); inked(g, '#1c1c1c');
+    g.fillStyle = '#c9c9c9'; g.fillRect(F.x - 40, F.y - 12, 12, 24); g.fillRect(F.x + 28, F.y - 12, 12, 24);
     if (c.has('fuse')) {
-      g.beginPath(); g.roundRect(FUSE.x - 30, FUSE.y - 10, 60, 20, 9); inked(g, '#e8e0cc');
-      g.strokeStyle = '#a33'; g.lineWidth = 2; g.beginPath(); g.moveTo(FUSE.x - 20, FUSE.y); g.lineTo(FUSE.x + 20, FUSE.y); g.stroke();
+      g.beginPath(); g.roundRect(F.x - 30, F.y - 10, 60, 20, 9); inked(g, '#e8e0cc');
+      g.strokeStyle = '#a33'; g.lineWidth = 2; g.beginPath(); g.moveTo(F.x - 20, F.y); g.lineTo(F.x + 20, F.y); g.stroke();
     }
-    // compressor and coil, below the grille (always visible)
-    g.beginPath(); g.roundRect(110, 385, 200, 110, 20); inked(g, '#4d6270');
-    g.strokeStyle = tempColor(st[H.coolantTemp]).getStyle(); g.lineWidth = 8;
+    const C = CHILLER.COMP;
+    if (c.has('compressor')) { g.beginPath(); g.roundRect(C.x - 100, C.y - 55, 200, 110, 20); inked(g, '#4d6270'); }
+    else socket(g, C.x, C.y, 56);
+    g.strokeStyle = tempColor(c.state[H.coolantTemp]).getStyle(); g.lineWidth = 8;
     g.beginPath();
     for (let k = 0; k < 8; k++) { g.moveTo(340 + k * 34, 390); g.lineTo(340 + k * 34, 490); }
     g.stroke();
@@ -565,6 +527,77 @@ export const chillerDef: MachineDef = {
     for (let y = 90; y < 340; y += 18) { g.beginPath(); g.moveTo(120, y); g.lineTo(680, y); g.stroke(); }
   },
   drawExterior(g, c) {
-    lever(g, 690, 450, (c.state[H.flags] & F.chillerOn) !== 0, c.active?.id === 'power' ? c.active.dy : 0);
+    lever(g, c, 'power', CH_LEVER.x, CH_LEVER.top, CH_LEVER.bottom);
   },
 };
+
+// ======================================================================
+// Toolbox (at the crash site)
+// ======================================================================
+export const toolboxDef: PanelDef = {
+  front: { rect: [130, 110, 540, 340], size: [0.75, 0.47] },
+  sync: noSync,
+  controls: [],
+  drawInterior(g, c) {
+    background(g, c, '#2b2622', '#141210');
+    g.beginPath(); g.roundRect(150, 160, 500, 260, 12); inked(g, '#c0392b', 5);
+    g.beginPath(); g.roundRect(170, 180, 460, 220, 6); g.fillStyle = '#3a1410'; g.fill();
+    for (const [id, x] of [['tool0', 300], ['tool1', 500]] as const) {
+      const it = c.item(id);
+      if (it) drawItem(g, it, x, 290, 150); else socket(g, x, 290, 50);
+    }
+  },
+  drawPlate(g) {
+    g.beginPath(); g.roundRect(150, 140, 500, 280, 12); inked(g, '#d0473a', 5);
+    g.beginPath(); g.roundRect(330, 120, 140, 30, 8); g.strokeStyle = INK; g.lineWidth = 6; g.stroke();
+    g.fillStyle = '#9aa3a8'; g.fillRect(200, 260, 24, 40); g.fillRect(576, 260, 24, 40);
+  },
+};
+
+// ======================================================================
+// Bench: any item, opened from the inventory. Generic exploded view.
+// ======================================================================
+export function benchDef(): PanelDef {
+  return {
+    front: { rect: [0, 0, PW, PH], size: [1, 1] },
+    sync: noSync,
+    controls: [],
+    drawInterior(g, c) {
+      // a workbench mat
+      g.fillStyle = '#4a3622'; g.fillRect(0, 0, PW, PH);
+      g.fillStyle = '#2f4a3a'; g.beginPath(); g.roundRect(30, 30, PW - 60, PH - 60, 14); g.fill();
+      g.strokeStyle = '#ffffff10'; g.lineWidth = 1;
+      for (let x = 50; x < PW - 30; x += 40) { g.beginPath(); g.moveTo(x, 30); g.lineTo(x, PH - 30); g.stroke(); }
+      for (let y = 50; y < PH - 30; y += 40) { g.beginPath(); g.moveTo(30, y); g.lineTo(PW - 30, y); g.stroke(); }
+      const asm = c.inst.asm;
+      if (!asm.slots.length) {
+        drawItem(g, c.inst.item, PW / 2, PH / 2, 300);
+        return;
+      }
+      // the item itself, faintly, as the frame everything sits in
+      g.save(); g.globalAlpha = 0.2; drawItem(g, { ...c.inst.item, parts: {} }, PW / 2, PH / 2, 420); g.restore();
+      for (const s of asm.slots) {
+        if (s.kind === 'plate' || s.locks) continue;
+        const content = c.slots[s.id];
+        if (!content?.item) { socket(g, s.x, s.y, s.r * 0.9); continue; }
+        g.save();
+        g.translate(s.x, s.y);
+        if (s.fix && !content.fixed) g.rotate(0.35); // loose
+        drawItem(g, content.item, 0, 0, s.r * 1.8);
+        g.restore();
+        if (s.fix?.tool === 'solder_iron' && content.fixed) {
+          g.fillStyle = '#c9c9c9';
+          for (const [dx, dy] of [[-s.r * 0.7, -s.r * 0.5], [s.r * 0.7, -s.r * 0.5], [-s.r * 0.7, s.r * 0.5], [s.r * 0.7, s.r * 0.5]]) {
+            g.beginPath(); g.arc(s.x + dx, s.y + dy, 4, 0, Math.PI * 2); g.fill();
+          }
+        }
+      }
+    },
+    drawPlate(g, c, plateId) {
+      const s = c.inst.asm.slots.find((x) => x.id === plateId)!;
+      const [x, y, w, h] = s.rect!;
+      g.beginPath(); g.roundRect(x, y, w, h, 12); inked(g, '#6d7378', 4);
+      drawItem(g, c.item(plateId)!, x + w / 2, y + h / 2, Math.min(w, h) * 0.7);
+    },
+  };
+}
