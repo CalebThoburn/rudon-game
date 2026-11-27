@@ -3,17 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rudon — Prototype 01</title>
-    <link rel="stylesheet" href="./src/style.css" />
+    <title>Rudon</title>
+    <link rel="stylesheet" href="./src/game/style.css" />
   </head>
   <body>
     <div id="app"></div>
-    <div id="hint" class="hidden">F</div>
-    <canvas id="inspect" class="hidden"></canvas>
-    <div id="inventory"></div>
-    <canvas id="ghost" class="hidden"></canvas>
-    <div id="hud"></div>
-    <div id="help"><a href="./elements.html" style="color:#e9c46a">Prototype 02: elements →</a> · WASD move · Q/E rotate · F open, pick up, put down · hold to unscrew · drag anything anywhere · double-click an item (or B) to open it · Esc close · ` debug</div>
-    <script type="module" src="./src/main.ts"></script>
+    <div id="vitals"></div>
+    <div id="readout" class="hidden"></div>
+    <div id="bag"></div>
+    <div id="toast" class="hidden"></div>
+    <div id="corner"><span id="clock"></span><span id="speed"></span></div>
+    <div id="help">WASD walk · Q/E turn · scroll to zoom in (closer shows what things are made of) · click to pick up within reach · 1–9 choose, click to put down · F eat · G drink · T toilet · V view ·
+      <a href="./elements.html">element lab</a> · <a href="./proto1.html">prototype 01</a></div>
+    <script type="module" src="./src/game/main.ts"></script>
   </body>
 </html>

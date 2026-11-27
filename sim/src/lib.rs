@@ -1055,10 +1055,10 @@ mod tests {
 // ---------- Prototype 02: element world exports ----------
 use elements::Elements;
 
-/// `which`: 0 = the demo room, 1 = empty room.
+/// `which`: 0 = the demo room, 1 = empty room, 2 = the building.
 #[no_mangle]
 pub extern "C" fn elem_new(which: u32) -> *mut Elements {
-    let e = if which == 0 { elements::demo() } else {
+    let e = if which == 0 { elements::demo() } else if which == 2 { elements::world::building().0 } else {
         let mut e = Elements::new();
         e.boxed(0, 0, elements::W - 1, elements::H - 1, elements::CONCRETE);
         e
@@ -1133,6 +1133,58 @@ pub unsafe extern "C" fn elem_edit(e: *mut Elements, x: u32, y: u32, tool: u32, 
 pub unsafe extern "C" fn elem_time(e: *mut Elements) -> f32 {
     let e = &*e;
     e.time
+}
+
+/// 8 floats per person (see `Elements::people_data`).
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_people(e: *mut Elements) -> *const f32 {
+    let e = &mut *e;
+    e.people_data().as_ptr()
+}
+
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_people_count(e: *mut Elements) -> u32 {
+    let e = &*e;
+    e.people.len() as u32
+}
+
+/// 96 floats (see `Elements::player_state`).
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_player_state(e: *mut Elements) -> *const f32 {
+    let e = &mut *e;
+    e.player_state().as_ptr()
+}
+
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_player_input(e: *mut Elements, dx: i32, dy: i32, act: u32) {
+    let e = &mut *e;
+    e.player_input(dx, dy, act as u8);
+}
+
+/// Pick up the cell (or a scoop of what's in it) into the player's bag. 1 if it worked.
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_pick(e: *mut Elements, x: u32, y: u32) -> u32 {
+    let e = &mut *e;
+    e.player_pick(x as usize, y as usize) as u32
+}
+
+/// Put bag item `slot` into a cell. 1 if it worked.
+/// # Safety
+/// `e` must come from `elem_new`.
+#[no_mangle]
+pub unsafe extern "C" fn elem_place(e: *mut Elements, x: u32, y: u32, slot: u32) -> u32 {
+    let e = &mut *e;
+    e.player_place(x as usize, y as usize, slot as usize) as u32
 }
 
 #[no_mangle]

@@ -1,6 +1,6 @@
 //! Element-level simulation: Prototype 02.
 //!
-//! Everything is made of eleven elements: H C N O Na Cl Si Fe Cu Zn Au.
+//! Everything is made of thirteen elements: H C N O Na Cl Si Fe Cu Zn Au Ca P.
 //!
 //! The world is a top-down grid of 10 cm cells. A cell is either SOLID (a base
 //! material, plus any compounds lodged in it) or OPEN (a mixture of gases,
@@ -28,8 +28,14 @@
 //!
 //! See the vault notes `Elements` and `Organs`.
 
-pub const W: usize = 192;
-pub const H: usize = 128;
+#[path = "el_humans.rs"]
+pub mod humans;
+#[path = "el_world.rs"]
+pub mod world;
+pub use humans::{Carry, Goal, Job, Person, Pick};
+
+pub const W: usize = 288;
+pub const H: usize = 176;
 pub const N: usize = W * H;
 const V: f32 = 0.001; // m³ per cell (10 cm cube)
 const RGAS: f32 = 8.314;
@@ -40,7 +46,7 @@ const T_FLAME: f32 = 3200.0; // K: dissociation caps how hot a flame gets
 const HEAT_PER_O2: f32 = 440e3; // J per mol O2 consumed when organic matter oxidises
 
 // ---------------------------------------------------------------- elements
-pub const NEL: usize = 11;
+pub const NEL: usize = 13;
 pub const EH: usize = 0;
 pub const EC: usize = 1;
 pub const EN: usize = 2;
@@ -52,10 +58,12 @@ pub const EFE: usize = 7;
 pub const ECU: usize = 8;
 pub const EZN: usize = 9;
 pub const EAU: usize = 10;
-pub const AMU: [f32; NEL] = [1.008, 12.011, 14.007, 15.999, 22.99, 35.45, 28.086, 55.845, 63.546, 65.38, 196.97];
+pub const ECA: usize = 11;
+pub const EP: usize = 12;
+pub const AMU: [f32; NEL] = [1.008, 12.011, 14.007, 15.999, 22.99, 35.45, 28.086, 55.845, 63.546, 65.38, 196.97, 40.078, 30.974];
 
 // ---------------------------------------------------------------- compounds
-pub const NSP: usize = 18;
+pub const NSP: usize = 19;
 pub const O2: usize = 0;
 pub const N2: usize = 1;
 pub const H2: usize = 2;
@@ -74,32 +82,34 @@ pub const CELLULOSE: usize = 14; // fibre, cell walls, starch
 pub const CHITIN: usize = 15; // insect shells
 pub const ZNOH2: usize = 16; // spent zinc (from batteries)
 pub const FE2O3: usize = 17; // rust
+pub const APATITE: usize = 18; // bone mineral
 const NGAS: usize = 7;
 
-/// Atoms per molecule: [H, C, N, O, Na, Cl, Si, Fe, Cu, Zn, Au].
+/// Atoms per molecule: [H, C, N, O, Na, Cl, Si, Fe, Cu, Zn, Au, Ca, P].
 pub const FORMULA: [[f32; NEL]; NSP] = [
-    [0., 0., 0., 2., 0., 0., 0., 0., 0., 0., 0.],   // O2
-    [0., 0., 2., 0., 0., 0., 0., 0., 0., 0., 0.],   // N2
-    [2., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // H2
-    [0., 1., 0., 2., 0., 0., 0., 0., 0., 0., 0.],   // CO2
-    [2., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0.],   // steam
-    [3., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],   // ammonia gas
-    [4., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // methane
-    [2., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0.],   // water
-    [3., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],   // liquid ammonia
-    [3., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],   // dissolved ammonia
-    [98., 55., 0., 6., 0., 0., 0., 0., 0., 0., 0.], // fat C55H98O6
-    [22., 12., 0., 11., 0., 0., 0., 0., 0., 0., 0.], // sucrose C12H22O11
-    [0., 0., 0., 0., 1., 1., 0., 0., 0., 0., 0.],   // NaCl
-    [8., 5., 1., 2., 0., 0., 0., 0., 0., 0., 0.],   // protein C5H8O2N
-    [10., 6., 0., 5., 0., 0., 0., 0., 0., 0., 0.],  // cellulose C6H10O5
-    [13., 8., 1., 5., 0., 0., 0., 0., 0., 0., 0.],  // chitin C8H13O5N
-    [2., 0., 0., 2., 0., 0., 0., 0., 0., 1., 0.],   // Zn(OH)2
-    [0., 0., 0., 3., 0., 0., 0., 2., 0., 0., 0.],   // Fe2O3
+    [0., 0., 0., 2., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // O2
+    [0., 0., 2., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // N2
+    [2., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // H2
+    [0., 1., 0., 2., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // CO2
+    [2., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // steam
+    [3., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // ammonia gas
+    [4., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // methane
+    [2., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // water
+    [3., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // liquid ammonia
+    [3., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // dissolved ammonia
+    [98., 55., 0., 6., 0., 0., 0., 0., 0., 0., 0., 0., 0.], // fat C55H98O6
+    [22., 12., 0., 11., 0., 0., 0., 0., 0., 0., 0., 0., 0.], // sucrose C12H22O11
+    [0., 0., 0., 0., 1., 1., 0., 0., 0., 0., 0., 0., 0.],   // NaCl
+    [8., 5., 1., 2., 0., 0., 0., 0., 0., 0., 0., 0., 0.],   // protein C5H8O2N
+    [10., 6., 0., 5., 0., 0., 0., 0., 0., 0., 0., 0., 0.],  // cellulose C6H10O5
+    [13., 8., 1., 5., 0., 0., 0., 0., 0., 0., 0., 0., 0.],  // chitin C8H13O5N
+    [2., 0., 0., 2., 0., 0., 0., 0., 0., 1., 0., 0., 0.],   // Zn(OH)2
+    [0., 0., 0., 3., 0., 0., 0., 2., 0., 0., 0., 0., 0.],   // Fe2O3
+    [1., 0., 0., 13., 0., 0., 0., 0., 0., 0., 0., 5., 3.],  // hydroxyapatite Ca5(PO4)3OH (bone mineral)
 ];
 /// Density when condensed (kg/m³). Dissolved ammonia takes no extra room.
-const RHO: [f32; NSP] = [0., 0., 0., 0., 0., 0., 0., 1000., 680., 0., 910., 1590., 2160., 1350., 1500., 1400., 3050., 5240.];
-const CP: [f32; NSP] = [920., 1040., 14300., 840., 2000., 2100., 2200., 4186., 4700., 4700., 2000., 1250., 880., 1700., 1300., 1400., 700., 650.];
+const RHO: [f32; NSP] = [0., 0., 0., 0., 0., 0., 0., 1000., 680., 0., 910., 1590., 2160., 1350., 1500., 1400., 3050., 5240., 3160.];
+const CP: [f32; NSP] = [920., 1040., 14300., 840., 2000., 2100., 2200., 4186., 4700., 4700., 2000., 1250., 880., 1700., 1300., 1400., 700., 650., 700.];
 /// Compounds of life: they burn, they rot, they can be eaten.
 const ORGANICS: [usize; 5] = [FAT, SUGAR, PROTEIN, CELLULOSE, CHITIN];
 /// How fast microbes break each down when moist (fraction per second).
@@ -138,7 +148,15 @@ pub const FLAP_E: u8 = 19;
 pub const FLAP_S: u8 = 20;
 pub const FLAP_W: u8 = 21;
 pub const FLAP_N: u8 = 22;
-pub const NMAT: usize = 23;
+pub const PAPER: u8 = 23; // records: cellulose, soaks up moisture from humid air (aux = letter seed)
+pub const MAIN: u8 = 24; // the water main: always full of cold water under pressure
+pub const SPRING: u8 = 25; // a brine spring below the building
+pub const DRAIN: u8 = 26; // to the sewer: whatever reaches it is carried away
+pub const NMAT: usize = 27;
+// DRAIN kinds (aux)
+pub const PLAIN_DRAIN: u8 = 0;
+pub const TOILET: u8 = 1;
+pub const OUTFALL: u8 = 2;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Base {
@@ -166,10 +184,11 @@ struct Mat {
 }
 
 const fn el(h: f32, c: f32, n: f32, o: f32, na: f32, cl: f32, si: f32, fe: f32, cu: f32, zn: f32, au: f32) -> [f32; NEL] {
-    [h, c, n, o, na, cl, si, fe, cu, zn, au]
+    [h, c, n, o, na, cl, si, fe, cu, zn, au, 0., 0.]
 }
 const NOTHING: [f32; NEL] = [0.; NEL];
 const SIO2: [f32; NEL] = el(0., 0., 0., 0.533, 0., 0., 0.467, 0., 0., 0., 0.);
+const CONCRETE_COMP: [f32; NEL] = [0.01, 0., 0., 0.49, 0., 0., 0.25, 0., 0., 0., 0., 0.25, 0.];
 const fn mat(rho: f32, cp: f32, k: f32, strength: f32, conductor: bool, powder: bool, base: Base, comp: [f32; NEL], color: [u8; 3]) -> Mat {
     Mat { rho, cp, k, strength, conductor, powder, base, comp, color }
 }
@@ -181,7 +200,7 @@ const MATS: [Mat; NMAT] = [
     mat(7140., 388., 116., 5e5, true, false, Base::InHp, el(0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.), [170, 178, 186]), // zinc
     mat(2200., 710., 100., 2e5, true, false, Base::Consumed, el(0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.), [40, 40, 44]), // carbon (graphite)
     mat(2500., 840., 1.0, 2.5e5, false, false, Base::Fixed, SIO2, [175, 210, 215]),                     // glass
-    mat(2400., 880., 1.5, 8e5, false, false, Base::Fixed, SIO2, [120, 116, 108]),                       // concrete (silica)
+    mat(2400., 880., 1.5, 8e5, false, false, Base::Fixed, CONCRETE_COMP, [120, 116, 108]),              // concrete (calcium silicate hydrate)
     mat(1100., 2000., 0.15, 1e5, false, false, Base::Consumed, el(0.118, 0.882, 0., 0., 0., 0., 0., 0., 0., 0., 0.), [46, 46, 46]), // rubber C5H8
     mat(19300., 129., 318., 5e5, true, false, Base::Fixed, el(0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1.), [242, 201, 76]), // gold
     mat(917., 2100., 2.2, 2e5, false, false, Base::InHp, el(0.112, 0., 0., 0.888, 0., 0., 0., 0., 0., 0., 0.), [210, 235, 250]), // ice H2O
@@ -198,11 +217,18 @@ const MATS: [Mat; NMAT] = [
     mat(0., 2000., 0., 0., false, false, Base::Fixed, el(0.118, 0.882, 0., 0., 0., 0., 0., 0., 0., 0., 0.), [60, 60, 60]),
     mat(0., 2000., 0., 0., false, false, Base::Fixed, el(0.118, 0.882, 0., 0., 0., 0., 0., 0., 0., 0., 0.), [60, 60, 60]),
     mat(0., 2000., 0., 0., false, false, Base::Fixed, el(0.118, 0.882, 0., 0., 0., 0., 0., 0., 0., 0., 0.), [60, 60, 60]),
+    mat(0., 0., 0.12, 1e5, false, false, Base::None, NOTHING, [232, 222, 196]),                         // paper
+    mat(0., 0., 0., 0., false, false, Base::None, NOTHING, [70, 110, 160]),                             // water main
+    mat(0., 0., 0., 0., false, false, Base::None, NOTHING, [140, 150, 170]),                            // brine spring
+    mat(0., 0., 0., 0., false, false, Base::None, NOTHING, [30, 30, 34]),                               // drain
 ];
 
 #[inline]
+pub fn cond_vol_pub(c: &[f32; NSP]) -> f32 {
+    cond_vol(c)
+}
 pub fn is_open(mat: u8) -> bool {
-    mat == OPEN || mat == MESH || (FLAP_E..=FLAP_N).contains(&mat)
+    mat == OPEN || mat == MESH || (FLAP_E..=FLAP_N).contains(&mat) || mat == MAIN || mat == SPRING || mat == DRAIN
 }
 #[inline]
 fn passable(mat: u8) -> bool {
@@ -225,7 +251,7 @@ fn dissolved(c: &[f32; NSP]) -> (f32, f32) {
 fn cond_vol(c: &[f32; NSP]) -> f32 {
     let (sd, gd) = dissolved(c);
     let mut v = (c[SALT] - sd) / RHO[SALT] + (c[SUGAR] - gd) / RHO[SUGAR];
-    for s in [WATER, NH3L, FAT, PROTEIN, CELLULOSE, CHITIN, ZNOH2, FE2O3] {
+    for s in [WATER, NH3L, FAT, PROTEIN, CELLULOSE, CHITIN, ZNOH2, FE2O3, APATITE] {
         v += c[s] / RHO[s];
     }
     v
@@ -459,13 +485,27 @@ fn comp(parts: &[(usize, f32)]) -> [f32; NSP] {
 }
 
 // ---------------------------------------------------------------- recipes
-/// A leafy plant shoot filling a 10 cm cell (mostly water, as plants are).
+// Plant organs (PLANT cells keep their organ in `aux`).
+pub const ROOT: u8 = 0;
+pub const STEM: u8 = 1;
+pub const LEAF: u8 = 2;
+pub const FLOWER: u8 = 3;
+/// One 10 cm cell of a plant organ (mostly water, as plants are).
+pub fn plant_organ(kind: u8) -> [f32; NSP] {
+    match kind {
+        ROOT => comp(&[(WATER, 0.016), (CELLULOSE, 0.003), (SUGAR, 0.0003), (PROTEIN, 0.0004), (FAT, 0.0001), (SALT, 0.00001)]),
+        STEM => comp(&[(WATER, 0.014), (CELLULOSE, 0.004), (SUGAR, 0.0005), (PROTEIN, 0.0003), (FAT, 0.0001), (SALT, 0.000008)]),
+        FLOWER => comp(&[(WATER, 0.012), (CELLULOSE, 0.0008), (SUGAR, 0.004), (PROTEIN, 0.0009), (FAT, 0.0001), (SALT, 0.000005)]), // nectar; pollen is protein
+        _ => comp(&[(WATER, 0.016), (CELLULOSE, 0.0015), (SUGAR, 0.0005), (PROTEIN, 0.0012), (FAT, 0.0003), (SALT, 0.000008)]),
+    }
+}
+/// A leaf (the default plant cell).
 pub fn plant_tissue() -> [f32; NSP] {
-    comp(&[(WATER, 0.016), (CELLULOSE, 0.0024), (SUGAR, 0.0008), (PROTEIN, 0.0006), (FAT, 0.0002), (SALT, 0.000008)])
+    plant_organ(LEAF)
 }
 /// A handful of peanuts: ~49% fat, 26% protein, 16% carbohydrate, 6% water.
 pub fn peanuts() -> [f32; NSP] {
-    comp(&[(FAT, 0.00049), (PROTEIN, 0.00026), (CELLULOSE, 0.00009), (SUGAR, 0.00007), (WATER, 0.00006), (SALT, 0.0000005)])
+    comp(&[(FAT, 0.00098), (PROTEIN, 0.00052), (CELLULOSE, 0.00018), (SUGAR, 0.00014), (WATER, 0.00012), (SALT, 0.000001)])
 }
 /// Peanut butter (per cell): roasted, ground peanuts; Rudon's adds salt and sugar.
 pub fn peanut_butter(salty_sweet: bool) -> [f32; NSP] {
@@ -594,9 +634,24 @@ pub struct Elements {
     pub aux2: Vec<u16>, // plants: pollinated (ticks remaining)
     /// Structural damage (0 = sound, 1 = broken), separate from mass.
     pub dmg: Vec<f32>,
+    /// How well the floor and ceiling above/below a cell are insulated (1 = ordinary slab).
+    pub insul: Vec<f32>,
     pub spark: Vec<u8>,
     pub agents: Vec<Agent>,
     pub loose: Vec<Loose>,
+    pub people: Vec<Person>,
+    pub jobs: Vec<Job>,
+    /// Where workers eat (x0, y0, x1, y1); everywhere if None.
+    pub canteen: Option<[usize; 4]>,
+    /// Where idle workers wait.
+    pub quarters: Option<[usize; 4]>,
+    /// What's in the sewer pipes under the floor, between drains and outfalls.
+    pub sewer: [f32; NSP],
+    /// Elements that came in from (or went back to) the mains and springs.
+    pub imported: [f64; NEL],
+    people_buf: Vec<f32>,
+    player_buf: [f32; 96],
+    fields: Vec<Vec<u16>>,
     pub time: f32,
     substeps: u64,
     life_ticks: u64,
@@ -609,7 +664,7 @@ pub struct Elements {
     shock: Vec<u8>,
     region: Vec<u32>,
     region_p: Vec<f32>,
-    flow_g: Vec<[f32; 2]>,
+    pub flow_g: Vec<[f32; 2]>,
     flow_l: Vec<[f32; 2]>,
     dm: Vec<[f32; NSP]>,
     de: Vec<f32>,
@@ -638,9 +693,19 @@ impl Elements {
             aux: vec![0.0; N],
             aux2: vec![0; N],
             dmg: vec![0.0; N],
+            insul: vec![1.0; N],
             spark: vec![0; N],
             agents: Vec::new(),
             loose: Vec::new(),
+            people: Vec::new(),
+            jobs: Vec::new(),
+            canteen: None,
+            quarters: None,
+            sewer: [0.0; NSP],
+            imported: [0.0; NEL],
+            people_buf: Vec::new(),
+            player_buf: [0.0; 96],
+            fields: Vec::new(),
             time: 0.0,
             substeps: 0,
             life_ticks: 0,
@@ -712,7 +777,14 @@ impl Elements {
         self.dmg[i] = 0.0;
         self.spark[i] = 0;
         match mat {
-            PLANT => self.m[i] = plant_tissue(),
+            PLANT => {
+                self.m[i] = plant_tissue();
+                self.aux[i] = LEAF as f32;
+            }
+            PAPER => {
+                self.m[i] = comp(&[(CELLULOSE, 0.57), (WATER, 0.04)]);
+                self.aux[i] = (i as u32).wrapping_mul(2654435761) as f32 % 1e9;
+            }
             PEANUT => self.m[i] = peanuts(),
             ORGANIC => self.m[i] = organic_matter(),
             SOIL => self.m[i] = soil_extras(),
@@ -839,6 +911,23 @@ impl Elements {
         for l in &self.loose {
             add_comp(&l.comp);
         }
+        add_comp(&self.sewer);
+        for p in &self.people {
+            for o in &p.organs {
+                add_comp(&o.comp);
+            }
+            for part in [&p.stomach, &p.bowel, &p.bladder, &p.blood] {
+                add_comp(part);
+            }
+            let mut carried: Vec<&Carry> = p.bag.iter().collect();
+            carried.push(&p.carry);
+            for c in carried {
+                match c {
+                    Carry::Fluid(m) | Carry::Cell { m, .. } => add_comp(m),
+                    Carry::None => {}
+                }
+            }
+        }
         for i in 0..N {
             let bm = self.base_mass(i);
             if bm > 0.0 {
@@ -862,8 +951,12 @@ impl Elements {
     }
     fn conductivity(&self, i: usize) -> f32 {
         let mat = self.mat[i];
-        if is_open(mat) {
-            if cond_vol(&self.m[i]) > 0.3 * V { 0.6 } else { 0.026 }
+        if mat == MAIN || mat == SPRING {
+            50.0 // moving water: a thin film on the pipe wall
+        } else if is_open(mat) {
+            // Gas: 0.5 W/mK stands in for the convective film on every surface (h ≈ 10 W/m²K),
+            // since a top-down grid has no vertical convection of its own.
+            if cond_vol(&self.m[i]) > 0.3 * V { 0.6 } else { 0.5 }
         } else {
             MATS[mat as usize].k
         }
@@ -876,9 +969,83 @@ impl Elements {
         }
     }
 
+    /// The building's plumbing: mains and springs stay full; drains carry things away.
+    fn plumbing(&mut self) {
+        for i in 0..N {
+            match self.mat[i] {
+                MAIN | SPRING => {
+                    let mut want = [0.0; NSP];
+                    if self.mat[i] == MAIN {
+                        // supply side: a little over full (mains pressure); return-side taps
+                        // just keep what they feed topped up, without pressure that would
+                        // wash out soil
+                        want[WATER] = if self.aux[i] > 0.0 { 0.6 } else { 1.002 };
+                        if self.aux[i] > 0.0 {
+                            // and air over the water at room pressure, like an open channel
+                            // (a full or airless channel would burst or crush soil walls)
+                            let n = P0 * 0.4 * V / (RGAS * self.aux[i]);
+                            want[O2] = 0.21 * n * mm(O2);
+                            want[N2] = 0.79 * n * mm(N2);
+                        }
+                        // supply side 6 °C; the return side (aux = its temperature) has
+                        // been through the archive coils and comes out warm
+                        self.temp[i] = if self.aux[i] > 0.0 { self.aux[i] } else { 279.0 };
+                    } else {
+                        want[WATER] = 1.0;
+                        want[SALT] = 0.045;
+                        self.temp[i] = 288.0;
+                    }
+                    for s in 0..NSP {
+                        let d = want[s] - self.m[i][s];
+                        for e in 0..NEL {
+                            self.imported[e] += (d * el_frac(s, e)) as f64;
+                        }
+                    }
+                    self.m[i] = want;
+                }
+                DRAIN if self.aux[i] as u8 == OUTFALL => {
+                    // The sewer passes a settling trap: what isn't water (stool, fibre, dead
+                    // matter) settles into the digester here, with only as much water as it
+                    // holds (it stays wet). The water itself goes on down the main sewer and
+                    // out of the building.
+                    let room = (0.5 * V - cond_vol(&self.m[i])).max(0.0) * 1000.0;
+                    let solids: f32 = (0..NSP).filter(|&s| s >= WATER && s != WATER).map(|s| self.sewer[s]).sum();
+                    if solids > 1e-9 && room > 1e-6 {
+                        let k = (room.min(0.005) / solids).min(1.0);
+                        for s in WATER + 1..NSP {
+                            let x = self.sewer[s] * k;
+                            self.sewer[s] -= x;
+                            self.m[i][s] += x;
+                        }
+                        let w = (solids * k * 1.5).min(self.sewer[WATER]);
+                        self.sewer[WATER] -= w;
+                        self.m[i][WATER] += w;
+                    }
+                }
+                DRAIN => {
+                    // anything liquid or solid that reaches a drain goes into the sewer
+                    for s in WATER..NSP {
+                        self.sewer[s] += self.m[i][s];
+                        self.m[i][s] = 0.0;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn substep(&mut self) {
         let dt = SUBSTEP;
         self.substeps += 1;
+        self.plumbing();
+        // the main sewer leaves the building: water beyond what the trap holds goes with it
+        if self.sewer[WATER] > 0.5 {
+            let x = self.sewer[WATER] - 0.5;
+            self.sewer[WATER] = 0.5;
+            for e in 0..NEL {
+                self.imported[e] -= (x * el_frac(WATER, e)) as f64;
+            }
+        }
         for i in 0..N {
             let open = is_open(self.mat[i]);
             self.pres[i] = if open { fluid_pressure(&self.m[i], self.temp[i]) } else { 0.0 };
@@ -1016,11 +1183,46 @@ impl Elements {
                 self.temp[a] -= q / ca;
                 self.temp[b] += q / cb;
             }
-            self.temp[a] += (T0 - self.temp[a]) * (0.002 * dt / ca).min(0.5);
+            // Dew: steam condenses straight onto a solid surface colder than the air's dew point
+            // (the air touching the surface is at the surface's temperature).
+            if is_open(self.mat[a]) && self.m[a][STEAM] > 1e-7 {
+                let c = &self.m[a];
+                let pv = c[STEAM] / mm(STEAM) * RGAS * self.temp[a] / free_vol(c).max(1e-9);
+                for d in 0..4 {
+                    let Some(b) = Self::nb(a, d) else { continue };
+                    if is_open(self.mat[b]) || self.temp[b] >= self.temp[a] {
+                        continue;
+                    }
+                    let ps = lookup(&tables().water, self.temp[b]);
+                    if pv > ps {
+                        let mol = (0.02 * (pv - ps) * free_vol(&self.m[a]) / (RGAS * self.temp[a]) * dt / SUBSTEP).min(self.m[a][STEAM] / mm(STEAM));
+                        self.m[a][STEAM] -= mol * mm(STEAM);
+                        self.m[a][WATER] += mol * mm(WATER);
+                        self.temp[b] += mol * 40_700.0 / self.cap[b].max(1.0);
+                        break;
+                    }
+                }
+            }
+            // Air exchanges heat with the floor and ceiling slabs (at building temperature)
+            // above and below it; insulated rooms much less.
+            let slab = if is_open(self.mat[a]) { 0.1 * self.insul[a] } else { 0.002 };
+            self.temp[a] += (T0 - self.temp[a]) * (slab * dt / ca).min(0.5);
+            // Radiation from hot gas (a flame): onto the solid surfaces around it, or, where it
+            // sees none, out past the floor and ceiling.
             let t = self.temp[a];
             if t > 500.0 {
-                let q = (0.02 * 5.67e-8 * 0.02 * (t.powi(4) - T0.powi(4)) * dt).min(0.5 * ca * (t - T0));
-                self.temp[a] -= q / ca;
+                let mut q_out = 0.0;
+                for d in 0..4 {
+                    let Some(b) = Self::nb(a, d) else { continue };
+                    let tb = self.temp[b];
+                    if !is_open(self.mat[b]) && tb < t {
+                        let q = (0.3 * 5.67e-8 * 0.01 * (t.powi(4) - tb.powi(4)) * dt).min(0.2 * ca * (t - tb));
+                        self.temp[b] += q / self.cap[b].max(1.0);
+                        q_out += q;
+                    }
+                }
+                q_out += (0.02 * 5.67e-8 * 0.02 * (t.powi(4) - T0.powi(4)) * dt).min(0.3 * ca * (t - T0));
+                self.temp[a] -= q_out.min(0.6 * ca * (t - T0)) / ca;
             }
         }
     }
@@ -1136,9 +1338,18 @@ impl Elements {
             let room = ((T_FLAME - t) * cap0).max(0.0);
 
             // Burning gases (H2, CH4, NH3): above ~800 K, at a spark, or H2 on gold.
+            // a flame next door lights this cell too (that's how flames spread)
+            let flame_nb = (0..4).any(|d| Self::nb(i, d).is_some_and(|j| self.temp[j] > 1000.0 && is_open(self.mat[j])));
             for (s, limit) in [(H2, 0.04), (CH4, 0.05), (NH3G, 0.15)] {
-                let lit = t > 800.0 || spark || (s == H2 && catalyst && t > 330.0);
-                if lit && c[s] / mm(s) / ntot > limit && c[O2] / mm(O2) / ntot > 0.03 {
+                // Igniting cold gas (a spark, a catalyst) needs a mixture inside the flammable
+                // limits. An established flame (this cell or the one beside it hot) burns whatever
+                // fuel and oxygen reach it: inside a 10 cm cell they meet at a thin front even
+                // where the cell's average mixture is too lean or too rich.
+                let hot = t > 800.0 || flame_nb;
+                let kindled = spark || (s == H2 && catalyst && t > 330.0);
+                let in_limits = c[s] / mm(s) / ntot > limit && c[O2] / mm(O2) / ntot > 0.03;
+                let burns = if hot { c[s] > 1e-9 && c[O2] > 1e-9 } else { kindled && in_limits };
+                if burns {
                     let mol = 0.6 * c[s] / mm(s);
                     let need = FORMULA[s][EC] + FORMULA[s][EH] / 4.0;
                     let mol = mol.min(room / (need * HEAT_PER_O2).max(1.0));
@@ -1242,7 +1453,8 @@ impl Elements {
                     }
                 }
                 SALT_X | SUGAR_X => {
-                    let (s, per_water, per_fat) = if mat == SALT_X { (SALT, 0.36, 0.0) } else { (SUGAR, 2.0, 0.0) };
+                    // dissolve into water; also milled into fatty paste (peanut butter) up to a few percent
+                    let (s, per_water, per_fat) = if mat == SALT_X { (SALT, 0.36, 0.04) } else { (SUGAR, 2.0, 0.3) };
                     for d in 0..4 {
                         let Some(j) = Self::nb(i, d) else { continue };
                         if !is_open(self.mat[j]) {
@@ -1261,7 +1473,22 @@ impl Elements {
                 }
                 // Roasting breaks peanuts down: what they're made of runs out as paste.
                 PEANUT if t > 430.0 => self.vacate(i),
-                PLANT | PEANUT | ORGANIC | SOIL => self.composite_chemistry(i, dt),
+                SOIL => {
+                    // soil wicks up water (and what's dissolved in it) from wet cells beside it
+                    if self.m[i][WATER] < 0.3 {
+                        if let Some(j) = (0..4).filter_map(|d| Self::nb(i, d)).find(|&j| is_open(self.mat[j]) && self.m[j][WATER] > 0.1 && self.mat[j] != MAIN) {
+                            let x = (0.3 - self.m[i][WATER]).min(self.m[j][WATER] * 0.02);
+                            let frac = x / self.m[j][WATER];
+                            for s in [WATER, SALT, NH3AQ] {
+                                let y = self.m[j][s] * frac * if s == WATER { 1.0 } else { dissolved_share(&self.m[j], s) };
+                                self.m[j][s] -= y;
+                                self.m[i][s] += y;
+                            }
+                        }
+                    }
+                    self.composite_chemistry(i, dt);
+                }
+                PLANT | PEANUT | ORGANIC | PAPER => self.composite_chemistry(i, dt),
                 STEEL => {
                     // Rust: 4 Fe + 3 O2 → 2 Fe2O3, where water and oxygen touch it.
                     if let Some(j) = (0..4).filter_map(|d| Self::nb(i, d)).find(|&j| is_open(self.mat[j]) && self.m[j][WATER] > 0.05 && self.m[j][O2] > 1e-6) {
@@ -1323,6 +1550,25 @@ impl Elements {
             solid[WATER] -= w;
             air[STEAM] += w;
         }
+        // Paper is hygroscopic: it takes up or gives off water toward an equilibrium set by the
+        // air's humidity (~7% of its weight at 50% humidity, over 10% above ~70%, when it starts to rot).
+        if mat == PAPER {
+            let pv = air[STEAM] / mm(STEAM) * RGAS * t / free_vol(&air);
+            let rh = (pv / lookup(&tables().water, t)).min(1.0);
+            let target = solid[CELLULOSE] * (0.02 + 0.2 * rh * rh);
+            let x = ((target - solid[WATER]) * 0.002 * dt / SUBSTEP).clamp(-solid[WATER], air[STEAM]);
+            solid[WATER] += x;
+            air[STEAM] -= x;
+        }
+        // Dead tissue in water: what dissolves (sugar, salt) leaches out into it.
+        if mat == ORGANIC && air[WATER] > 0.3 {
+            for (sp, per_water) in [(SUGAR, 2.0f32), (SALT, 0.36)] {
+                let room = (per_water * air[WATER] - air[sp]).max(0.0);
+                let x = (solid[sp] * 0.01 * dt / SUBSTEP).min(room);
+                solid[sp] -= x;
+                air[sp] += x;
+            }
+        }
         let living = mat == PLANT || mat == PEANUT;
         let cm = condensed_mass(&solid);
         if !living && cm > 1e-6 && solid[WATER] / cm >= 0.1 && (275.0..333.0).contains(&t) {
@@ -1333,7 +1579,13 @@ impl Elements {
                 if aerobic {
                     heat += oxidise(s, mol, &mut solid, &mut air, true);
                 } else {
+                    // the microbes use the water in the dead matter itself
+                    let w0 = air[WATER];
+                    air[WATER] += solid[WATER];
+                    solid[WATER] = 0.0;
                     ferment(s, mol, &mut solid, &mut air);
+                    solid[WATER] = (air[WATER] - w0).max(0.0);
+                    air[WATER] = air[WATER].min(w0);
                 }
             }
         }
@@ -1473,15 +1725,41 @@ impl Elements {
         self.plants(dt);
         self.animals(dt);
         self.loose_organs(dt);
+        self.people_life(dt);
     }
 
-    /// Plants: photosynthesise (CO2 + water → sugar + O2), take up water, ammonia
-    /// and dissolved salt from their surroundings, grow along soil, and set peanuts when pollinated.
+    /// Plants are connected organ cells. Water, sugar, nitrogen and salt spread between
+    /// touching cells (flowers pull sugar in: nectar). Roots draw from soil; leaves
+    /// photosynthesise (12 CO2 + 11 H2O → sugar + 12 O2) and transpire; pollinated
+    /// flowers become peanut pods. Spare sugar grows new organs where they fit.
     fn plants(&mut self, dt: f32) {
+        // sharing along the plant
         for i in 0..N {
             if self.mat[i] != PLANT {
                 continue;
             }
+            for d in 0..2 {
+                let Some(j) = Self::nb(i, d) else { continue };
+                if self.mat[j] != PLANT {
+                    continue;
+                }
+                let (ti, tj) = (total(&self.m[i]), total(&self.m[j]));
+                let pull = |k: f32| if k as u8 == FLOWER { 0.3 } else { 1.0 }; // flowers hoard sugar
+                for s in [WATER, SUGAR, NH3AQ, SALT] {
+                    let (wi, wj) = if s == SUGAR { (pull(self.aux[i]), pull(self.aux[j])) } else { (1.0, 1.0) };
+                    let ci = self.m[i][s] / ti.max(1e-9) * wi;
+                    let cj = self.m[j][s] / tj.max(1e-9) * wj;
+                    let x = (0.05 * (ci - cj) * ti.min(tj)).clamp(-self.m[j][s] * 0.2, self.m[i][s] * 0.2);
+                    self.m[i][s] -= x;
+                    self.m[j][s] += x;
+                }
+            }
+        }
+        for i in 0..N {
+            if self.mat[i] != PLANT {
+                continue;
+            }
+            let kind = self.aux[i] as u8;
             let t = self.temp[i];
             let mut p = self.m[i];
             let size = total(&p);
@@ -1492,82 +1770,106 @@ impl Elements {
             if self.aux2[i] > 0 {
                 self.aux2[i] -= 1;
             }
-            let Some(j) = (0..4).filter_map(|d| Self::nb(i, d)).filter(|&j| is_open(self.mat[j])).max_by(|&a, &b| self.m[a][CO2].total_cmp(&self.m[b][CO2])) else { continue };
-            let mut air = self.m[j];
-            // drink: liquid water (and what's dissolved in it) from the air cell or a neighbouring soil cell
-            let want = 0.8 * size - p[WATER];
-            if want > 0.0 {
-                let soil = (0..4).filter_map(|d| Self::nb(i, d)).find(|&k| self.mat[k] == SOIL && self.m[k][WATER] > 0.05);
-                let src = soil.or(if air[WATER] > 1e-4 { Some(j) } else { None });
-                if let Some(k) = src {
-                    let take = want.min(self.m[k][WATER] * 0.05).min(2e-5 * dt);
-                    let frac = take / self.m[k][WATER].max(1e-12);
-                    let (salt, nh3) = (self.m[k][SALT] * frac * dissolved_share(&self.m[k], SALT), self.m[k][NH3AQ] * frac);
-                    if k == j {
-                        air[WATER] -= take;
-                        air[SALT] -= salt;
-                        air[NH3AQ] -= nh3;
-                    } else {
+            match kind {
+                ROOT => {
+                    if let Some(k) = (0..4).filter_map(|d| Self::nb(i, d)).find(|&k| self.mat[k] == SOIL && self.m[k][WATER] > 0.02) {
+                        let want = (0.8 * size - p[WATER]).max(0.0);
+                        let take = want.min(self.m[k][WATER] * 0.05).min(4e-5 * dt);
+                        let frac = take / self.m[k][WATER].max(1e-12);
+                        let salt = self.m[k][SALT] * frac * dissolved_share(&self.m[k], SALT);
                         self.m[k][WATER] -= take;
                         self.m[k][SALT] -= salt;
-                        self.m[k][NH3AQ] -= nh3;
+                        p[WATER] += take;
+                        p[SALT] += salt;
+                        if p[NH3AQ] < 0.0003 {
+                            let x = self.m[k][NH3AQ] * 0.01;
+                            self.m[k][NH3AQ] -= x;
+                            p[NH3AQ] += x;
+                        }
                     }
-                    p[WATER] += take;
-                    p[SALT] += salt;
-                    p[NH3AQ] += nh3;
                 }
-            }
-            // nitrogen for protein: roots draw dissolved ammonia from the soil; leaves take it from the air
-            let nh3 = air[NH3G] * 0.2;
-            air[NH3G] -= nh3;
-            p[NH3AQ] += nh3;
-            if p[NH3AQ] < 0.0005 {
-                if let Some(k) = (0..4).filter_map(|d| Self::nb(i, d)).find(|&k| self.mat[k] == SOIL && self.m[k][NH3AQ] > 0.0) {
-                    let x = self.m[k][NH3AQ] * 0.01;
-                    self.m[k][NH3AQ] -= x;
-                    p[NH3AQ] += x;
+                LEAF => {
+                    if let Some(j) = (0..4).filter_map(|d| Self::nb(i, d)).filter(|&j| is_open(self.mat[j])).max_by(|&a, &b| self.m[a][CO2].total_cmp(&self.m[b][CO2])) {
+                        let mut air = self.m[j];
+                        let nh3 = air[NH3G] * 0.2;
+                        air[NH3G] -= nh3;
+                        p[NH3AQ] += nh3;
+                        if (283.0..313.0).contains(&t) && p[WATER] > 0.6 * size {
+                            // (game-accelerated: real leaves are ~500× slower)
+                            let mol = (air[CO2] * 0.3 / mm(CO2) / 12.0).min(2e-5 * dt).min(p[WATER] * 0.01 / mm(WATER) / 11.0);
+                            air[CO2] -= mol * 12.0 * mm(CO2);
+                            p[WATER] -= mol * 11.0 * mm(WATER);
+                            p[SUGAR] += mol * mm(SUGAR);
+                            air[O2] += mol * 12.0 * mm(O2);
+                        }
+                        // transpiration: leaves lose water to dry air
+                        let pv = air[STEAM] / mm(STEAM) * RGAS * t / free_vol(&air);
+                        let rh = (pv / lookup(&tables().water, t)).min(1.0);
+                        let w = ((1.0 - rh) * 1e-6 * dt).min(p[WATER] * 0.01);
+                        p[WATER] -= w;
+                        air[STEAM] += w;
+                        self.m[j] = air;
+                    }
                 }
+                FLOWER => {
+                    // an animal beside the flower brushes pollen onto it (only animals are
+                    // counted in `crowd` at this point; people aren't)
+                    if (0..4).any(|d| Self::nb(i, d).is_some_and(|q| self.crowd[q] > 0)) {
+                        self.aux2[i] = 1500;
+                    }
+                    // pollinated, with the sugar to do it: the flower becomes a peanut pod
+                    if self.aux2[i] > 0 {
+                        let nuts = peanuts();
+                        if let Some(j) = self.open_nb(i) {
+                            let mut air = self.m[j];
+                            if build(&mut p, &mut air, &nuts) {
+                                self.m[j] = air;
+                                self.mat[i] = PEANUT;
+                                let mut pod = nuts;
+                                add(&mut pod, &p); // what's left of the flower stays in the pod
+                                self.m[i] = pod;
+                                self.aux[i] = 0.0;
+                                self.aux2[i] = 0;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
-            // photosynthesis: 12 CO2 + 11 H2O → C12H22O11 + 12 O2
-            if (283.0..313.0).contains(&t) && p[WATER] > 0.6 * size {
-                // (game-accelerated: real leaves are ~500× slower)
-                let mol = (air[CO2] * 0.3 / mm(CO2) / 12.0).min(2e-5 * dt).min(p[WATER] * 0.01 / mm(WATER) / 11.0);
-                air[CO2] -= mol * 12.0 * mm(CO2);
-                p[WATER] -= mol * 11.0 * mm(WATER);
-                p[SUGAR] += mol * mm(SUGAR);
-                air[O2] += mol * 12.0 * mm(O2);
-            }
-            // grow into a neighbouring open cell beside soil
-            let shoot = plant_tissue();
-            if p[SUGAR] > shoot[SUGAR] + 0.005 && self.rand() < 0.2 {
+            // grow a new organ into a free neighbouring cell
+            if self.rand() < 0.1 {
                 let d = (self.rand() * 4.0) as usize % 4;
                 if let Some(k) = Self::nb(i, d) {
                     let by_soil = (0..4).any(|e| Self::nb(k, e).is_some_and(|q| self.mat[q] == SOIL));
-                    if k != j && self.walkable(k) && by_soil && self.crowd[k] == 0 && build(&mut p, &mut air, &shoot) && self.displace(k) {
-                        self.mat[k] = PLANT;
-                        self.m[k] = shoot;
-                        self.temp[k] = t;
-                        self.aux2[k] = 0;
-                    } else if k == j || !self.walkable(k) {
-                        // nowhere to grow: nothing spent
-                    }
-                }
-            }
-            // set peanuts when pollinated
-            let nuts = peanuts();
-            if self.aux2[i] > 0 && p[SUGAR] > 0.0025 {
-                let d = (self.rand() * 4.0) as usize % 4;
-                if let Some(k) = Self::nb(i, d) {
-                    if k != j && self.walkable(k) && self.crowd[k] == 0 && build(&mut p, &mut air, &nuts) && self.displace(k) {
-                        self.mat[k] = PEANUT;
-                        self.m[k] = nuts;
-                        self.temp[k] = t;
-                        self.aux2[i] = 0;
+                    // a plant can't hold itself up more than ~30 cm from the soil
+                    let (kx, ky) = ((k % W) as i32, (k / W) as i32);
+                    let near_soil = (-3i32..=3).any(|dy| (-3i32..=3).any(|dx| {
+                        let (x, y) = (kx + dx, ky + dy);
+                        x >= 0 && y >= 0 && x < W as i32 && y < H as i32 && self.mat[y as usize * W + x as usize] == SOIL
+                    }));
+                    let crowded = (0..4).filter(|&e| Self::nb(k, e).is_some_and(|q| self.mat[q] == PLANT)).count() > 2;
+                    if near_soil && self.walkable(k) && self.crowd[k] == 0 && !crowded {
+                        let r = self.rand();
+                        let new_kind = if by_soil && kind == ROOT { ROOT } else if kind == ROOT { STEM } else if r < 0.55 { LEAF } else if r < 0.8 { STEM } else { FLOWER };
+                        let organ = plant_organ(new_kind);
+                        if p[SUGAR] > organ[SUGAR] + 0.001 {
+                            if let Some(j) = self.open_nb(i) {
+                                let mut air = self.m[j];
+                                if build(&mut p, &mut air, &organ) && self.displace(k) {
+                                    self.m[j] = air;
+                                    self.mat[k] = PLANT;
+                                    self.m[k] = organ;
+                                    self.aux[k] = new_kind as f32;
+                                    self.aux2[k] = 0;
+                                    self.temp[k] = t;
+                                }
+                            }
+                        }
                     }
                 }
             }
             self.m[i] = p;
-            self.m[j] = air;
         }
     }
 
@@ -1737,7 +2039,13 @@ impl Elements {
             // about its own weight in food per game hour
             let bite = ((if a.kind == CATERPILLAR { 1e-7 } else { 5e-8 }) * a.grow_scale).min(gut_room);
             if a.kind == CATERPILLAR {
-                if let Some(p) = (0..4).filter_map(|d| Self::nb(best, d)).find(|&p| self.mat[p] == PLANT) {
+                if let Some(p) = (0..4).filter_map(|d| Self::nb(best, d)).filter(|&p| self.mat[p] == PLANT)
+                    .max_by(|&x, &y| (self.m[x][SUGAR] / total(&self.m[x]).max(1e-9)).total_cmp(&(self.m[y][SUGAR] / total(&self.m[y]).max(1e-9)))) {
+                    for q in (0..4).filter_map(|d| Self::nb(best, d)) {
+                        if self.mat[q] == PLANT && self.aux[q] as u8 == FLOWER {
+                            self.aux2[q] = 1500; // pollen carried from flower to flower
+                        }
+                    }
                     let plant = total(&self.m[p]);
                     let k = (bite / plant).min(1.0);
                     let eaten = scaled(&self.m[p], k);
@@ -1745,8 +2053,7 @@ impl Elements {
                         self.m[p][s] -= eaten[s];
                     }
                     add(&mut a.gut, &eaten);
-                    self.aux2[p] = 1500; // pollinated in passing
-                    if total(&self.m[p]) < 0.3 * total(&plant_tissue()) {
+                    if total(&self.m[p]) < 0.3 * total(&plant_organ(self.aux[p] as u8)) {
                         self.vacate(p); // eaten to the stalk: what's left lies there
                     }
                 }
@@ -1809,7 +2116,10 @@ impl Elements {
             }
         }
         // Salt is slowly lost (and must be eaten again); store spare blood sugar in the fat body.
-        let salt_out = a.blood[SALT] * 0.0005; // about 1/e every 7 minutes: they must keep eating salt
+        // Beetles: about 1/e every 7 minutes, so they must keep eating salt. Caterpillars eat
+        // leaves, which hold almost none, so (like real leaf-eaters) they hold on to it ten
+        // times harder.
+        let salt_out = a.blood[SALT] * if a.kind == CATERPILLAR { 0.00005 } else { 0.0005 };
         a.blood[SALT] -= salt_out;
         self.m[best][SALT] += salt_out;
         let spare = a.blood[SUGAR] - 0.03 * a.blood[WATER];
@@ -1948,7 +2258,7 @@ impl Elements {
         for o in loose.iter_mut() {
             let cell = o.cell;
             let mut bath = self.m[cell];
-            let fed = bath[WATER] > 0.05 && dissolved(&bath).1 > 1e-5 && bath[O2] > 1e-7;
+            let fed = bath[WATER] > 0.005 && dissolved(&bath).1 > 1e-6 && bath[O2] > 1e-7;
             if o.health > 0.0 && fed {
                 // soak up sugar and water, and burn a little sugar to stay alive
                 let s = (dissolved(&bath).1 * 0.01).min(1e-8 * dt);
@@ -2085,8 +2395,10 @@ impl Elements {
                         let b = MATS[self.aux[i] as usize].color;
                         col = [b[0] as f32 * 0.8, b[1] as f32 * 0.8, b[2] as f32 * 0.8];
                     }
-                    for k in 0..3 {
-                        col[k] += noise;
+                    if mode == 9 {
+                        for k in 0..3 {
+                            col[k] += noise;
+                        }
                     }
                     if t > 700.0 {
                         let g = ((t - 700.0) / 1500.0).min(1.0);
@@ -2095,9 +2407,6 @@ impl Elements {
                     if self.spark[i] >= 3 {
                         col = [255., 250., 180.];
                     }
-                    if !is_open(mat) && i >= W && is_open(self.mat[i - W]) {
-                        for v in col.iter_mut() { *v += 25.0; }
-                    }
                     col
                 }
             };
@@ -2105,9 +2414,40 @@ impl Elements {
             self.rgba[o] = col[0].clamp(0., 255.) as u8;
             self.rgba[o + 1] = col[1].clamp(0., 255.) as u8;
             self.rgba[o + 2] = col[2].clamp(0., 255.) as u8;
-            self.rgba[o + 3] = 255;
+            self.rgba[o + 3] = self.shape_class(i);
         }
         &self.rgba
+    }
+
+    /// Which shape a cell belongs to, for the vector renderer: neighbouring cells of the
+    /// same class merge into one smooth outlined shape.
+    /// 0 air · 1..39 solid materials · 40+ plant organs · 60+ a liquid or paste (by what's most of it).
+    pub fn shape_class(&self, i: usize) -> u8 {
+        let mat = self.mat[i];
+        if mat == PLANT {
+            return 40 + self.aux[i] as u8;
+        }
+        if mat == DRAIN {
+            return 30 + self.aux[i] as u8;
+        }
+        if !is_open(mat) || mat == MAIN || mat == SPRING {
+            return mat;
+        }
+        let c = &self.m[i];
+        if cond_vol(c) / V < 0.25 {
+            return if mat == OPEN { 0 } else { mat };
+        }
+        let mut best = WATER;
+        for s in WATER..NSP {
+            if c[s] > c[best] {
+                best = s;
+            }
+        }
+        // a paste is a paste whatever's most of it
+        if best == PROTEIN || best == SUGAR && c[FAT] > 0.1 * condensed_mass(c) {
+            best = FAT;
+        }
+        60 + best as u8
     }
 
     /// [x, y, code] for animals and loose organs. Codes: 0 caterpillar, 1 beetle,
@@ -2122,13 +2462,20 @@ impl Elements {
         }
         &self.agent_buf
     }
+    /// Relative humidity of an open cell (0..1).
+    pub fn humidity(&self, i: usize) -> f32 {
+        let c = &self.m[i];
+        let t = self.temp[i];
+        let pv = c[STEAM] / mm(STEAM) * RGAS * t / free_vol(c).max(1e-9);
+        (pv / lookup(&tables().water, t)).min(1.5)
+    }
     pub fn marker_count(&self) -> usize {
         self.agents.len() + self.loose.len()
     }
 
     /// Readout for one cell (96 floats):
     /// 0 material, 1 T, 2 P, 3 base mass, 4 spark, 5 total mass,
-    /// 6..24 compounds (kg), 24..35 elements (kg),
+    /// 6..24 compounds (kg; bone mineral at 89), 24..35 elements H..Au (kg; Ca and P at 87, 88),
     /// 35 animals here, 36 kind, 37 alive, 38 nerves, 39 tasted salt, 40 tasted sugar, 41 body mass,
     /// 42..66 organs × (mass, health, water fraction),
     /// 66 loose organs here, 67 first loose kind, 68 its health, 69 its signal, 70 its mass.
@@ -2140,15 +2487,17 @@ impl Elements {
         p[3] = self.base_mass(i);
         p[4] = self.spark[i] as f32;
         p[5] = p[3] + total(&self.m[i]);
+        // elements: H..Au at 24..34; Ca, P at 87, 88
+        let slot = |e: usize| if e < 11 { 24 + e } else { 87 + e - 11 };
         for s in 0..NSP {
-            p[6 + s] = self.m[i][s];
+            p[if s < 18 { 6 + s } else { 89 }] = self.m[i][s]; // bone mineral at 89
             for e in 0..NEL {
-                p[24 + e] += self.m[i][s] * el_frac(s, e);
+                p[slot(e)] += self.m[i][s] * el_frac(s, e);
             }
         }
         let bc = self.base_comp(i);
         for e in 0..NEL {
-            p[24 + e] += p[3] * bc[e];
+            p[slot(e)] += p[3] * bc[e];
         }
         let here: Vec<&Agent> = self.agents.iter().filter(|a| a.cell == i).collect();
         p[35] = here.len() as f32;
@@ -2173,6 +2522,17 @@ impl Elements {
             p[68] = o.health;
             p[69] = o.signal;
             p[70] = total(&o.comp);
+        }
+        // 71 people here, 72 player?, 73 core K, 74 alive, 75..86 organ masses (kg)
+        let folk: Vec<&Person> = self.people.iter().filter(|q| q.cell == i).collect();
+        p[71] = folk.len() as f32;
+        if let Some(q) = folk.first() {
+            p[72] = q.player as u8 as f32;
+            p[73] = q.core;
+            p[74] = q.alive as u8 as f32;
+            for (k, o) in q.organs.iter().enumerate() {
+                p[75 + k] = total(&o.comp);
+            }
         }
         self.probe_buf = p;
         &self.probe_buf
@@ -2331,9 +2691,16 @@ pub fn demo() -> Elements {
         let n = P0 * V / (RGAS * T0);
         c[CO2] += 0.05 * n * mm(CO2);
     });
+    // each plant: a root by the soil, a leaf, and a flower in bloom
     for y in (77..=119).step_by(6) {
         for x in (10..=64).step_by(9) {
             e.set_solid(Elements::idx(x, y), PLANT);
+            e.aux[Elements::idx(x, y)] = ROOT as f32;
+            e.m[Elements::idx(x, y)] = plant_organ(ROOT);
+            e.set_solid(Elements::idx(x + 1, y), PLANT);
+            e.set_solid(Elements::idx(x + 1, y + 1), PLANT);
+            e.aux[Elements::idx(x + 1, y + 1)] = FLOWER as f32;
+            e.m[Elements::idx(x + 1, y + 1)] = plant_organ(FLOWER);
         }
     }
     e.spawn(30, 92, CATERPILLAR, 20);
@@ -2556,7 +2923,7 @@ mod tests {
         let after = e.element_totals();
         for k in 0..NEL {
             let rel = (after[k] - before[k]).abs() / before[k].max(1e-6);
-            eprintln!("{:>2}: {:.6} → {:.6} kg ({:.2e})", ["H", "C", "N", "O", "Na", "Cl", "Si", "Fe", "Cu", "Zn", "Au"][k], before[k], after[k], rel);
+            eprintln!("{:>2}: {:.6} → {:.6} kg ({:.2e})", ["H", "C", "N", "O", "Na", "Cl", "Si", "Fe", "Cu", "Zn", "Au", "Ca", "P"][k], before[k], after[k], rel);
             assert!(rel < 2e-3 || (after[k] - before[k]).abs() < 1e-6, "element {k} changed");
         }
     }
